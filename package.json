@@ -1,0 +1,25 @@
+{
+  "name": "api-mcp-manager",
+  "version": "1.3.0",
+  "private": true,
+  "description": "可视化 API 知识库 MCP 客户端 (V1.3 - Streamable HTTP)",
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @api-mcp/core dev",
+    "build": "pnpm -r --filter=!@api-mcp/desktop run build",
+    "build:web": "pnpm --filter @api-mcp/web build",
+    "build:core": "pnpm --filter @api-mcp/core build",
+    "start": "pnpm --filter @api-mcp/cli start",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.16.0"
+  }
+}

@@ -1,0 +1,36 @@
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+build
+out
+release
+apps/cli/sea-out
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# Logs
+*.log
+pnpm-debug.log*
+npm-debug.log*
+.eslintcache
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Test / cache
+coverage
+.vite
+
+# Pack
+*.tgz
+*.local
