@@ -186,6 +186,12 @@ Token 可在 Web 后台的「安全」面板查看与重置。
 | 缓存配置 | Memory / Redis 切换，TTL 设置，Redis 连接测试后保存，服务自动重启 |
 | MCP 接入指南 | 内建帮助弹窗，提供 Cursor / Claude Desktop 的配置 JSON（一键复制） |
 
+### 界面截图
+
+![首页](assets/home.png)
+
+![设置](assets/setting.png)
+
 ## 🧪 测试
 
 ```bash
