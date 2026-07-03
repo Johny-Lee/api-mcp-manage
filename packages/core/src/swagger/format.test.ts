@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { formatApiList, filterApiList, formatApiDetail, formatNotFound } from "./format.js";
-import type { OpenApiDocument } from "../types.js";
+import type { OpenApiDocument, OpenApiOperation } from "../types.js";
 
 const sampleDoc: OpenApiDocument = {
   openapi: "3.0.0",
@@ -126,6 +126,83 @@ describe("formatApiDetail", () => {
     const op = sampleDoc.paths["/api/v1/login"].post!;
     const md = formatApiDetail("用户服务", "/api/v1/login", "post", op);
     expect(md).toContain("```json");
+  });
+
+  it("请求体对象 schema 渲染为参数表", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      requestBody: {
+        required: true,
+        content: {
+          "application/x-www-form-urlencoded": {
+            schema: {
+              type: "object",
+              properties: {
+                brandId: { type: "string", description: "品牌id" },
+                name: { type: "string" },
+              },
+              required: ["brandId"],
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    expect(md).toContain("| 参数名 | 类型 | 必填 | 描述 |");
+    expect(md).toContain("| `brandId` | string | ✅ | 品牌id |");
+    expect(md).toContain("| `name` | string |  |  |");
+    // 不再展示原始 schema JSON
+    expect(md).not.toContain('"properties"');
+  });
+
+  it("响应 schema description 含原始 JSON 文本 → 按 text 展示", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      responses: {
+        "200": {
+          description: "响应",
+          content: {
+            "application/json": {
+              // YApi 配置错误：res_body 实为含 // 注释的 JSON 文本，被降级存入 description
+              schema: {
+                type: "string",
+                description: '{\n    "message": "查询成功",\n    "logo": "http://x.com"  //logo\n}',
+              },
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    expect(md).toContain("```text");
+    expect(md).toContain('"message": "查询成功"');
+    expect(md).toContain("//logo");
+    // 不应把整个 schema 对象当 JSON 展示
+    expect(md).not.toContain('"type": "string"');
+  });
+
+  it("响应正常对象 schema → 参数表展示", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      responses: {
+        "200": {
+          description: "成功",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  token: { type: "string", description: "令牌" },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    expect(md).toContain("| 参数名 | 类型 | 必填 | 描述 |");
+    expect(md).toContain("| `token` | string |  | 令牌 |");
   });
 });
 

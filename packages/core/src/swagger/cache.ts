@@ -1,72 +1,120 @@
-import type { McpProject, OpenApiDocument, SwaggerCacheEntry } from "../types.js";
+import type { McpProject, McpSettings, OpenApiDocument } from "../types.js";
 import { fetchJson } from "../utils/http.js";
 import { normalizeDocument } from "./normalize.js";
 import { fetchYapiDocument, isYapiProject } from "./yapi.js";
 import { logger } from "../utils/logger.js";
+import {
+  createCacheStore,
+  MemoryCacheStore,
+  reinitCacheStore,
+  testRedisConnection,
+  type CacheStore,
+  type CacheStoreInitOptions,
+} from "./cache-store.js";
 
 /**
- * Swagger 懒加载二级缓存
+ * Swagger 懒加载缓存
  *
  * 策略：
- * - 首次调用某项目时拉取并解析 Swagger，结果常驻内存
+ * - 首次调用某项目时拉取并解析 Swagger，结果存入缓存（内存或 Redis）
  * - TTL 默认 2 小时，过期后下次调用触发重新拉取
- * - 定时 GC 清理已过期条目
+ * - 内存模式：定时 GC 清理已过期条目；Redis 模式：依赖 Redis 自身 TTL
+ * - 并发去重：进行中 Promise 在进程内共享，避免重复拉取
+ *
+ * 通过环境变量 MCP_REDIS_URL 切换为 Redis 跨进程共享缓存。
  */
 
 const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000; // 2 小时
-const GC_INTERVAL_MS = 10 * 60 * 1000; // 10 分钟扫描一次
 
-/** 内存缓存：projectId → entry */
-const cache = new Map<string, SwaggerCacheEntry>();
+/** 全局缓存存储实例（内存或 Redis） */
+let store: CacheStore = createCacheStore();
 
-/** 拉取中的进行中 Promise（防止并发重复拉取） */
+/** 可被覆盖的 TTL（由 setCacheTtl 设置，默认 2h） */
+let ttlMs = DEFAULT_TTL_MS;
+
+/** 拉取中的进行中 Promise（防止并发重复拉取，进程内去重） */
 const pending = new Map<string, Promise<OpenApiDocument>>();
 
-let gcTimer: NodeJS.Timeout | null = null;
-
-/** 启动 GC 定时器 */
+/** 启动缓存（内存模式下启动 GC 定时器） */
 export function startCacheGc(): void {
-  if (gcTimer) return;
-  gcTimer = setInterval(() => {
-    const now = Date.now();
-    let cleaned = 0;
-    for (const [key, entry] of cache) {
-      if (entry.expiresAt < now) {
-        cache.delete(key);
-        cleaned++;
-      }
-    }
-    if (cleaned > 0) {
-      logger.debug("缓存 GC 完成", { cleaned, remaining: cache.size });
-    }
-  }, GC_INTERVAL_MS);
-  // 不阻止进程退出
-  if (gcTimer.unref) gcTimer.unref();
+  if (store instanceof MemoryCacheStore) {
+    store.startGc();
+  }
+  // Redis 模式依赖 Redis 自身 TTL，无需本地 GC
 }
 
-/** 停止 GC 定时器（测试 / 关闭用） */
-export function stopCacheGc(): void {
-  if (gcTimer) {
-    clearInterval(gcTimer);
-    gcTimer = null;
+/** 停止缓存（清理定时器 / 关闭连接） */
+export async function stopCacheGc(): Promise<void> {
+  if (store.close) {
+    await store.close();
   }
+}
+
+/** 设置缓存 TTL（ms），覆盖默认 2 小时 */
+export function setCacheTtl(ms: number): void {
+  if (ms > 0) ttlMs = ms;
+}
+
+/** 获取当前生效的缓存存储类型 */
+export function getCacheKind(): "memory" | "redis" {
+  return store.kind;
 }
 
 /** 清空缓存 */
-export function clearCache(): void {
-  cache.clear();
+export async function clearCache(): Promise<void> {
   pending.clear();
+  if (store.clear) {
+    await store.clear();
+  }
+}
+
+/** 重置缓存存储实例为指定实现（测试用） */
+export async function setCacheStoreForTest(newStore: CacheStore): Promise<void> {
+  await clearCache();
+  store = newStore;
+}
+
+/**
+ * 根据配置重建缓存存储（切换 memory/redis 或修改 Redis 配置时调用）
+ *
+ * 会关闭旧 store、清空 pending、按新配置创建新 store，并更新 TTL。
+ * 调用后需重新 startCacheGc（内存模式）。
+ */
+export async function reinitCache(settings: McpSettings): Promise<void> {
+  const init: CacheStoreInitOptions = {
+    cacheType: settings.cache_type,
+    redis: settings.cache_redis,
+  };
+  pending.clear();
+  store = await reinitCacheStore(init);
+  if (settings.cache_ttl_ms && settings.cache_ttl_ms > 0) {
+    ttlMs = settings.cache_ttl_ms;
+  } else {
+    ttlMs = DEFAULT_TTL_MS;
+  }
+  logger.info("缓存已按配置重建", { kind: store.kind, ttlMs });
+}
+
+/**
+ * 测试 Redis 连接是否可用（不修改全局缓存状态）
+ *
+ * @returns { ok, error? }
+ */
+export async function testRedis(settings: McpSettings): Promise<{ ok: boolean; error?: string }> {
+  const redis = settings.cache_redis;
+  if (!redis?.url) {
+    return { ok: false, error: "未配置 Redis 连接地址" };
+  }
+  return testRedisConnection({
+    url: redis.url,
+    keyPrefix: redis.keyPrefix || "api-mcp:cache:",
+    tls: redis.tls || redis.url.startsWith("rediss://"),
+  });
 }
 
 /** 从缓存获取（过期返回 undefined） */
-export function getCached(projectId: string): OpenApiDocument | undefined {
-  const entry = cache.get(projectId);
-  if (!entry) return undefined;
-  if (entry.expiresAt < Date.now()) {
-    cache.delete(projectId);
-    return undefined;
-  }
-  return entry.doc;
+export async function getCached(projectId: string): Promise<OpenApiDocument | undefined> {
+  return store.get(projectId);
 }
 
 /** 基本校验 OpenAPI/Swagger 文档结构 */
@@ -115,7 +163,7 @@ async function fetchAndParse(project: McpProject): Promise<OpenApiDocument> {
 /** 懒加载获取项目文档（带并发去重） */
 export async function getProjectDoc(project: McpProject): Promise<OpenApiDocument> {
   // 1. 查缓存
-  const cached = getCached(project.id);
+  const cached = await store.get(project.id);
   if (cached) return cached;
 
   // 2. 查进行中
@@ -126,12 +174,7 @@ export async function getProjectDoc(project: McpProject): Promise<OpenApiDocumen
   const p = (async () => {
     try {
       const doc = await fetchAndParse(project);
-      const now = Date.now();
-      cache.set(project.id, {
-        doc,
-        cachedAt: now,
-        expiresAt: now + DEFAULT_TTL_MS,
-      });
+      await store.set(project.id, doc, ttlMs);
       return doc;
     } finally {
       pending.delete(project.id);
@@ -142,7 +185,7 @@ export async function getProjectDoc(project: McpProject): Promise<OpenApiDocumen
 }
 
 /** 主动使某项目缓存失效 */
-export function invalidateProject(projectId: string): void {
-  cache.delete(projectId);
+export async function invalidateProject(projectId: string): Promise<void> {
+  await store.delete(projectId);
   logger.debug("缓存已失效", { projectId });
 }

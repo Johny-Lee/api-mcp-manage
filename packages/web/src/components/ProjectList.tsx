@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { api, type ProjectItem, type TestResult, type ApiSource, type ProjectInput, type ApiItem } from "../api";
+import { api, type ProjectItem, type ApiSource, type ProjectInput, type ApiItem } from "../api";
+import ApiDetailModal from "./ApiDetailModal";
 
 export default function ProjectList() {
   const [projects, setProjects] = useState<ProjectItem[]>([]);
@@ -7,9 +8,7 @@ export default function ProjectList() {
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [testingId, setTestingId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const [viewingProject, setViewingProject] = useState<ProjectItem | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -28,24 +27,19 @@ export default function ProjectList() {
     load();
   }, [load]);
 
-  const handleTest = async (id: string) => {
-    setTestingId(id);
-    setTestResult(null);
-    try {
-      const result = await api.testConnection(id);
-      setTestResult(result);
-    } catch (err) {
-      setTestResult({ ok: false, error: err instanceof Error ? err.message : "测试失败" });
-    } finally {
-      setTestingId(null);
+  // 自动选中第一个项目（首次加载或删除后回退）
+  useEffect(() => {
+    if (!selectedId && projects.length > 0) {
+      setSelectedId(projects[0].id);
     }
-  };
+  }, [projects, selectedId]);
 
   const handleDelete = async (id: string) => {
     if (!confirm("确定删除该项目？")) return;
     try {
       await api.deleteProject(id);
       setProjects((prev) => prev.filter((p) => p.id !== id));
+      setSelectedId((prev) => (prev === id ? null : prev));
     } catch (err) {
       alert(err instanceof Error ? err.message : "删除失败");
     }
@@ -55,51 +49,135 @@ export default function ProjectList() {
     return <div className="text-center py-12 text-gray-500">加载中...</div>;
   }
 
-  // 项目详情视图：接口列表
-  if (viewingProject) {
-    return (
-      <ProjectDetail
-        project={viewingProject}
-        onBack={() => setViewingProject(null)}
-      />
-    );
-  }
+  const selectedProject = projects.find((p) => p.id === selectedId) || null;
 
   return (
-    <div>
-      {/* Error */}
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
-          {error}
-          <button onClick={load} className="ml-3 underline">重试</button>
+    <div className="flex gap-4 h-[calc(100vh-140px)]">
+      {/* 左侧：项目列表 */}
+      <aside className="w-72 flex-shrink-0 flex flex-col min-h-0 bg-white rounded-lg border border-gray-200 overflow-hidden">
+        {/* 头部 + 新增按钮 */}
+        <div className="p-3 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+          <h2 className="text-sm font-semibold text-gray-700">
+            项目 ({projects.length})
+          </h2>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-md hover:bg-blue-700 transition-colors"
+          >
+            + 新增项目
+          </button>
         </div>
-      )}
 
-      {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-gray-700">
-          API 项目 ({projects.length})
-        </h2>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
-        >
-          + 添加项目
-        </button>
-      </div>
+        {/* 错误提示 */}
+        {error && (
+          <div className="m-3 p-2 bg-red-50 border border-red-200 rounded-md text-red-700 text-xs flex-shrink-0">
+            {error}
+            <button onClick={load} className="ml-2 underline">重试</button>
+          </div>
+        )}
 
-      {/* Add Form */}
+        {/* 项目列表（可滚动） */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {projects.length === 0 && !error ? (
+            <div className="text-center py-10 px-4">
+              <p className="text-gray-400 text-sm mb-1">📭 暂无项目</p>
+              <p className="text-gray-400 text-xs">点击「新增项目」开始接入</p>
+            </div>
+          ) : (
+            projects.map((p) => {
+              const isYapi = p.source === "yapi";
+              const isSelected = selectedId === p.id;
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => setSelectedId(p.id)}
+                  className={`group flex items-start gap-2 px-3 py-2.5 border-l-2 cursor-pointer transition-colors ${
+                    isSelected
+                      ? "bg-blue-50 border-blue-500"
+                      : "border-transparent hover:bg-gray-50"
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                          isYapi ? "bg-purple-500" : "bg-blue-500"
+                        }`}
+                      />
+                      <h3
+                        className={`text-sm font-medium truncate ${
+                          isSelected ? "text-blue-700" : "text-gray-800"
+                        }`}
+                      >
+                        {p.name}
+                      </h3>
+                    </div>
+                    <p className="text-xs text-gray-400 truncate mt-0.5 ml-3">
+                      {isYapi
+                        ? `YApi · pid=${p.projectId || ""}`
+                        : p.url || "Swagger"}
+                    </p>
+                  </div>
+                  {/* 编辑 / 删除 */}
+                  <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingId(p.id);
+                      }}
+                      className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      title="编辑"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(p.id);
+                      }}
+                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                      title="删除"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
+      {/* 右侧：选中项目的接口列表 */}
+      <main className="flex-1 min-w-0 min-h-0">
+        {selectedProject ? (
+          <ProjectDetail
+            key={selectedProject.id}
+            project={selectedProject}
+          />
+        ) : (
+          <div className="h-full flex items-center justify-center bg-white rounded-lg border border-dashed border-gray-300">
+            <div className="text-center">
+              <p className="text-gray-400 text-lg mb-2">👈 请选择一个项目</p>
+              <p className="text-gray-400 text-sm">在左侧选择项目以查看接口列表</p>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* 新增表单 */}
       {showAdd && (
         <ProjectForm
           onClose={() => setShowAdd(false)}
           onSaved={(p) => {
             setProjects((prev) => [...prev, p]);
             setShowAdd(false);
+            setSelectedId(p.id);
           }}
         />
       )}
 
-      {/* Edit Form */}
+      {/* 编辑表单 */}
       {editingId && (
         <ProjectForm
           initial={projects.find((p) => p.id === editingId)}
@@ -112,139 +190,6 @@ export default function ProjectList() {
           }}
         />
       )}
-
-      {/* Empty State */}
-      {projects.length === 0 && !showAdd && (
-        <div className="text-center py-12 bg-white rounded-lg border border-dashed border-gray-300">
-          <p className="text-gray-400 text-lg mb-2">📭 暂无 API 项目</p>
-          <p className="text-gray-400 text-sm">点击「添加项目」接入第一个 Swagger/OpenAPI 文档</p>
-        </div>
-      )}
-
-      {/* Project Cards */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        {projects.map((p) => (
-          <ProjectCard
-            key={p.id}
-            project={p}
-            onView={() => setViewingProject(p)}
-            onEdit={() => setEditingId(p.id)}
-            onDelete={() => handleDelete(p.id)}
-            onTest={() => handleTest(p.id)}
-            testing={testingId === p.id}
-          />
-        ))}
-      </div>
-
-      {/* Test Result Modal */}
-      {testResult && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setTestResult(null)}>
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 mb-3">
-              <span className={`text-2xl ${testResult.ok ? "" : "text-red-500"}`}>
-                {testResult.ok ? "✅" : "❌"}
-              </span>
-              <h3 className="text-lg font-semibold">
-                {testResult.ok ? "连接成功" : "连接失败"}
-              </h3>
-            </div>
-            {testResult.ok ? (
-              <div className="text-sm text-gray-600 space-y-1">
-                <p><span className="font-medium">文档标题:</span> {testResult.title}</p>
-                <p><span className="font-medium">接口数量:</span> {testResult.pathCount}</p>
-                {testResult.version && <p><span className="font-medium">版本:</span> {testResult.version}</p>}
-              </div>
-            ) : (
-              <p className="text-sm text-red-600">{testResult.error}</p>
-            )}
-            <button
-              onClick={() => setTestResult(null)}
-              className="mt-4 px-4 py-2 bg-gray-200 rounded-md text-sm hover:bg-gray-300 w-full"
-            >
-              关闭
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** 项目卡片 */
-function ProjectCard({
-  project,
-  onView,
-  onEdit,
-  onDelete,
-  onTest,
-  testing,
-}: {
-  project: ProjectItem;
-  onView: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onTest: () => void;
-  testing: boolean;
-}) {
-  const isYapi = project.source === "yapi";
-  const endpointDisplay = isYapi
-    ? `${project.baseUrl || ""} · pid=${project.projectId || ""}`
-    : project.url || "";
-
-  return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between mb-2">
-        <button onClick={onView} className="text-left flex-1 min-w-0 hover:text-blue-600 transition-colors">
-          <h3 className="font-semibold text-gray-800 truncate">{project.name}</h3>
-          <p className="text-xs text-gray-400 font-mono mt-0.5">{project.id}</p>
-        </button>
-        <div className="flex items-center gap-1">
-          <span
-            className={`text-xs px-1.5 py-0.5 rounded ${isYapi ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}`}
-            title={isYapi ? "YApi 导出源" : "Swagger/OpenAPI 源"}
-          >
-            {isYapi ? "YApi" : "Swagger"}
-          </span>
-          {project.hasToken && (
-            <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded" title="已配置 Token">
-              🔑
-            </span>
-          )}
-        </div>
-      </div>
-      <p className="text-sm text-gray-500 mb-2 line-clamp-2 cursor-pointer hover:text-gray-700" onClick={onView}>
-        {project.desc || "无描述"}
-      </p>
-      <p className="text-xs text-gray-400 truncate mb-3" title={endpointDisplay}>
-        📡 {endpointDisplay || "—"}
-      </p>
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={onView}
-          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-        >
-          📋 查看接口
-        </button>
-        <button
-          onClick={onTest}
-          disabled={testing}
-          className="px-3 py-1.5 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 disabled:opacity-50 transition-colors"
-        >
-          {testing ? "测试中..." : "🔍 测试连接"}
-        </button>
-        <button
-          onClick={onEdit}
-          className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors"
-        >
-          ✏️ 编辑
-        </button>
-        <button
-          onClick={onDelete}
-          className="px-3 py-1.5 text-xs bg-red-50 text-red-600 rounded hover:bg-red-100 transition-colors"
-        >
-          🗑️ 删除
-        </button>
-      </div>
     </div>
   );
 }
@@ -252,16 +197,17 @@ function ProjectCard({
 /** 项目详情视图：展示该项目的接口列表 */
 function ProjectDetail({
   project,
-  onBack,
 }: {
   project: ProjectItem;
-  onBack: () => void;
 }) {
   const [apis, setApis] = useState<ApiItem[]>([]);
   const [title, setTitle] = useState(project.name);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
+  const [detailApi, setDetailApi] = useState<ApiItem | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState("");
 
   const load = useCallback(async (kw?: string) => {
     setLoading(true);
@@ -283,6 +229,27 @@ function ProjectDetail({
 
   const handleSearch = () => load(keyword.trim() || undefined);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshMsg("");
+    try {
+      const result = await api.refreshProject(project.id);
+      if (result.ok) {
+        setRefreshMsg(`已刷新：${result.pathCount} 个接口`);
+        // 刷新成功后重新加载接口列表
+        await load(keyword.trim() || undefined);
+      } else {
+        setRefreshMsg(`刷新失败：${result.error || "未知错误"}`);
+      }
+    } catch (err) {
+      setRefreshMsg(err instanceof Error ? err.message : "刷新失败");
+    } finally {
+      setRefreshing(false);
+      // 3 秒后清除提示
+      setTimeout(() => setRefreshMsg(""), 3000);
+    }
+  };
+
   const methodColor = (method: string): string => {
     const map: Record<string, string> = {
       GET: "bg-green-100 text-green-700",
@@ -294,78 +261,114 @@ function ProjectDetail({
     return map[method] || "bg-gray-100 text-gray-700";
   };
 
+  const isYapi = project.source === "yapi";
+
   return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onBack}
-            className="px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors"
-          >
-            ← 返回
-          </button>
-          <div>
-            <h2 className="text-lg font-semibold text-gray-700">{title}</h2>
-            <p className="text-xs text-gray-400">{project.id}</p>
-          </div>
-        </div>
-        <span className="text-sm text-gray-500">接口数: {loading ? "..." : apis.length}</span>
-      </div>
-
-      {/* Search */}
-      <div className="flex gap-2 mb-4">
-        <input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-          placeholder="按路径或接口名搜索..."
-        />
-        <button
-          onClick={handleSearch}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
-        >
-          搜索
-        </button>
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
-          {error}
-          <button onClick={() => load()} className="ml-3 underline">重试</button>
-        </div>
-      )}
-
-      {/* Loading */}
-      {loading && <div className="text-center py-12 text-gray-500">加载接口列表中...</div>}
-
-      {/* Empty */}
-      {!loading && !error && apis.length === 0 && (
-        <div className="text-center py-12 bg-white rounded-lg border border-dashed border-gray-300">
-          <p className="text-gray-400">📭 该项目暂无接口</p>
-        </div>
-      )}
-
-      {/* API List */}
-      {!loading && !error && apis.length > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
-          {apis.map((api, i) => (
-            <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors">
-              <span className={`text-xs font-mono font-bold px-2 py-1 rounded min-w-[60px] text-center ${methodColor(api.method)}`}>
-                {api.method}
-              </span>
-              <code className="text-sm text-gray-800 flex-1 truncate font-mono" title={api.path}>
-                {api.path}
-              </code>
-              <span className="text-sm text-gray-500 truncate max-w-[40%]" title={api.summary}>
-                {api.summary || "—"}
-                {api.deprecated && <span className="ml-1 text-orange-500">⚠️废弃</span>}
+    <div className="flex flex-col h-full min-h-0 bg-white rounded-lg border border-gray-200 overflow-hidden">
+      {/* 头部：标题 + 搜索 */}
+      <div className="p-4 border-b border-gray-200 flex-shrink-0">
+        <div className="flex items-center justify-between mb-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-gray-700 truncate">{title}</h2>
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
+                  isYapi ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
+                }`}
+              >
+                {isYapi ? "YApi" : "Swagger"}
               </span>
             </div>
-          ))}
+            <p className="text-xs text-gray-400 mt-0.5">{project.id}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-sm text-gray-500">接口数: {loading ? "..." : apis.length}</span>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="px-2.5 py-1 bg-gray-100 text-gray-600 text-xs rounded-md hover:bg-gray-200 disabled:opacity-50 transition-colors"
+              title="从上游重新拉取并刷新缓存"
+            >
+              {refreshing ? "刷新中..." : "🔄 刷新缓存"}
+            </button>
+            {refreshMsg && (
+              <span className={`text-xs ${refreshMsg.startsWith("已刷新") ? "text-green-600" : "text-red-500"}`}>
+                {refreshMsg}
+              </span>
+            )}
+          </div>
         </div>
+
+        {/* 搜索 */}
+        <div className="flex gap-2">
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            placeholder="按路径或接口名搜索..."
+          />
+          <button
+            onClick={handleSearch}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+          >
+            搜索
+          </button>
+        </div>
+      </div>
+
+      {/* 接口列表（可滚动） */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* 错误 */}
+        {error && (
+          <div className="m-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
+            {error}
+            <button onClick={() => load()} className="ml-3 underline">重试</button>
+          </div>
+        )}
+
+        {/* 加载中 */}
+        {loading && <div className="text-center py-12 text-gray-500">加载接口列表中...</div>}
+
+        {/* 空状态 */}
+        {!loading && !error && apis.length === 0 && (
+          <div className="text-center py-12">
+            <p className="text-gray-400">📭 该项目暂无接口</p>
+          </div>
+        )}
+
+        {/* 接口列表 */}
+        {!loading && !error && apis.length > 0 && (
+          <div className="divide-y divide-gray-100">
+            {apis.map((api, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors cursor-pointer"
+                onClick={() => setDetailApi(api)}
+              >
+                <span className={`text-xs font-mono font-bold px-2 py-1 rounded min-w-[60px] text-center ${methodColor(api.method)}`}>
+                  {api.method}
+                </span>
+                <code className="text-sm text-gray-800 flex-1 truncate font-mono" title={api.path}>
+                  {api.path}
+                </code>
+                <span className="text-sm text-gray-500 truncate max-w-[40%]" title={api.summary}>
+                  {api.summary || "—"}
+                  {api.deprecated && <span className="ml-1 text-orange-500">⚠️废弃</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 接口详情弹层 */}
+      {detailApi && (
+        <ApiDetailModal
+          projectId={project.id}
+          api={detailApi}
+          onClose={() => setDetailApi(null)}
+        />
       )}
     </div>
   );
@@ -382,7 +385,7 @@ function ProjectForm({
   onSaved: (p: ProjectItem) => void;
 }) {
   const isEdit = !!initial;
-  const [source, setSource] = useState<ApiSource>(initial?.source || "swagger");
+  const [source, setSource] = useState<ApiSource>(initial?.source || "yapi");
   const [name, setName] = useState(initial?.name || "");
   const [desc, setDesc] = useState(initial?.desc || "");
   const [url, setUrl] = useState(initial?.url || "");
@@ -458,7 +461,7 @@ function ProjectForm({
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">文档来源</label>
             <div className="flex gap-2">
-              {(["swagger", "yapi"] as const).map((s) => (
+              {(["yapi", "swagger"] as const).map((s) => (
                 <button
                   key={s}
                   type="button"

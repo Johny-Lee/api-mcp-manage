@@ -88,12 +88,22 @@ export function formatApiDetail(
     lines.push("");
     for (const [contentType, media] of Object.entries(op.requestBody.content)) {
       lines.push(`**Content-Type**: \`${contentType}\`${op.requestBody.required ? " (必填)" : ""}`);
+      // 对象 schema → 参数表展示（与请求参数风格一致）
       if (media.schema) {
-        lines.push("");
-        lines.push("Schema:");
-        lines.push("```json");
-        lines.push(JSON.stringify(media.schema, null, 2));
-        lines.push("```");
+        const table = schemaToTable(media.schema);
+        if (table) {
+          lines.push("");
+          lines.push("| 参数名 | 类型 | 必填 | 描述 |");
+          lines.push("|--------|------|------|------|");
+          lines.push(...table);
+        } else {
+          // 非对象 schema（原始类型等）→ 仍展示 schema JSON
+          lines.push("");
+          lines.push("Schema:");
+          lines.push("```json");
+          lines.push(JSON.stringify(media.schema, null, 2));
+          lines.push("```");
+        }
       }
       if (media.example !== undefined) {
         lines.push("");
@@ -116,10 +126,24 @@ export function formatApiDetail(
         for (const [contentType, media] of Object.entries(resp.content)) {
           lines.push("");
           lines.push(`\`${contentType}\`:`);
-          if (media.schema) {
-            lines.push("```json");
-            lines.push(JSON.stringify(media.schema, null, 2));
+          // schema description 含原始 JSON 文本（含 // 注释等无法严格解析）→ 按 text 展示
+          const rawText = extractRawJsonText(media.schema);
+          if (rawText !== undefined) {
+            lines.push("```text");
+            lines.push(rawText);
             lines.push("```");
+          } else if (media.schema) {
+            // 正常对象 schema → 参数表展示
+            const table = schemaToTable(media.schema);
+            if (table) {
+              lines.push("| 参数名 | 类型 | 必填 | 描述 |");
+              lines.push("|--------|------|------|------|");
+              lines.push(...table);
+            } else {
+              lines.push("```json");
+              lines.push(JSON.stringify(media.schema, null, 2));
+              lines.push("```");
+            }
           }
           if (media.example !== undefined) {
             lines.push("示例:");
@@ -135,6 +159,46 @@ export function formatApiDetail(
 
   return lines.join("\n");
 }
+
+/**
+ * 把对象 schema 的 properties 渲染为表格行。
+ * 仅当 schema 是对象（含 properties）时返回行数组；否则返回 undefined。
+ */
+function schemaToTable(schema: Record<string, unknown>): string[] | undefined {
+  const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties || typeof properties !== "object") return undefined;
+
+  const requiredList = (schema.required as unknown[] | undefined) ?? [];
+  const rows: string[] = [];
+  for (const [name, prop] of Object.entries(properties)) {
+    if (!prop || typeof prop !== "object") continue;
+    const type = describeSchema(prop);
+    const required = requiredList.includes(name) ? "✅" : "";
+    const desc = (prop.description as string | undefined) || "";
+    rows.push(`| \`${name}\` | ${type} | ${required} | ${desc} |`);
+  }
+  return rows.length ? rows : undefined;
+}
+
+/**
+ * 检测 schema.description 是否为原始响应 JSON 文本（YApi 中常见：
+ * res_body_is_json_schema=true 但 res_body 实为含 // 注释的 JSON 文本，
+ * 无法被 JSON.parse 严格解析，被降级存入 description）。
+ *
+ * 命中时返回该原始文本（按 text 展示）；否则返回 undefined。
+ */
+function extractRawJsonText(schema: Record<string, unknown> | undefined): string | undefined {
+  if (!schema) return undefined;
+  // 形如 { type: "string", description: "{ ...json-like... }" }
+  if (schema.type !== "string") return undefined;
+  const desc = schema.description;
+  if (typeof desc !== "string" || desc.length === 0) return undefined;
+  // 仅当 description 形似 JSON 文本（含花括号或方括号）时视为原始响应文本
+  if (!/[[{]/.test(desc)) return undefined;
+  return desc;
+}
+
+
 
 /** 未找到接口的友好提示 */
 export function formatNotFound(projectName: string, path: string, method: string): string {

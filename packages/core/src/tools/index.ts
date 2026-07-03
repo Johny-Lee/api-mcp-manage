@@ -11,6 +11,7 @@ import {
   formatNotFound,
 } from "../swagger/format.js";
 import { logger } from "../utils/logger.js";
+import { fetchYapiProjectDetail, formatProjectDetail, isYapiProject } from "../swagger/yapi.js";
 
 /**
  * 注册三个只读 MCP 工具
@@ -77,7 +78,7 @@ export function registerTools(
       } catch (err) {
         logger.error("get_api_list 失败", { projectId, error: String(err) });
         // 缓存可能因失败状态残留，主动失效以便下次重试
-        invalidateProject(projectId);
+        await invalidateProject(projectId);
         return errorMarkdown(
           `拉取项目 **${project.name}** 的接口列表失败：${errMsg(err)}\n请稍后重试或检查项目 URL 与 Token 配置。`,
         );
@@ -125,9 +126,47 @@ export function registerTools(
         return { content: [{ type: "text", text: markdown }] };
       } catch (err) {
         logger.error("get_api_details 失败", { projectId, path, method, error: String(err) });
-        invalidateProject(projectId);
+        await invalidateProject(projectId);
         return errorMarkdown(
           `获取接口详情失败：${errMsg(err)}\n请稍后重试或检查项目配置。`,
+        );
+      }
+    },
+  );
+
+  // ────────────────────────────────────────────
+  // Tool 4: get_project_detail（项目详情）→ Markdown
+  // 仅 YApi 源项目支持：拉取 /api/project/get，展示环境域名等配置
+  // ────────────────────────────────────────────
+  server.registerTool(
+    "get_project_detail",
+    {
+      title: "项目详情",
+      description: "查询项目详情（环境配置、域名等）。仅对 YApi 源项目有效，返回各环境域名与公共 Header，用于确认接口的实际访问地址。",
+      inputSchema: {
+        projectId: z.string().describe("目标项目 ID"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectId }) => {
+      const config = getConfig();
+      const project = config.projects.find((p) => p.id === projectId);
+      if (!project) {
+        return errorMarkdown(`项目不存在: ${projectId}\n请使用 list_projects 查看可用项目。`);
+      }
+      if (!isYapiProject(project)) {
+        return errorMarkdown(
+          `项目 **${project.name}** 非 YApi 源（source=${project.source || "swagger"}），不支持查询项目详情。\n该工具仅对 YApi 源项目有效。`,
+        );
+      }
+      try {
+        const detail = await fetchYapiProjectDetail(project);
+        const markdown = formatProjectDetail(project.name, project.id, detail);
+        return { content: [{ type: "text", text: markdown }] };
+      } catch (err) {
+        logger.error("get_project_detail 失败", { projectId, error: String(err) });
+        return errorMarkdown(
+          `获取项目详情失败：${errMsg(err)}\n请检查 YApi 配置（baseUrl / token）是否正确。`,
         );
       }
     },

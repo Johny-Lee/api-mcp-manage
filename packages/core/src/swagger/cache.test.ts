@@ -17,7 +17,11 @@ import {
   clearCache,
   startCacheGc,
   stopCacheGc,
+  setCacheStoreForTest,
+  reinitCache,
+  getCacheKind,
 } from "./cache.js";
+import { MemoryCacheStore, resetCacheStore } from "./cache-store.js";
 import type { McpProject } from "../types.js";
 
 const sampleProject: McpProject = {
@@ -35,13 +39,16 @@ const sampleDoc: OpenApiDocument = {
   paths: { "/users": { get: { summary: "list users" } } },
 };
 
-beforeEach(() => {
-  clearCache();
+beforeEach(async () => {
+  // 每个用例使用全新的内存存储，隔离互不影响
+  resetCacheStore();
+  await setCacheStoreForTest(new MemoryCacheStore());
+  await clearCache();
   fetchJsonMock.mockReset();
 });
 
-afterEach(() => {
-  stopCacheGc();
+afterEach(async () => {
+  await stopCacheGc();
 });
 
 describe("并发去重", () => {
@@ -60,8 +67,8 @@ describe("并发去重", () => {
 
     expect(fetchJsonMock).toHaveBeenCalledTimes(1);
     // 三个调用拿到同一文档对象
-    expect(results[0]).toBe(results[1]);
-    expect(results[1]).toBe(results[2]);
+    expect(results[0]).toEqual(results[1]);
+    expect(results[1]).toEqual(results[2]);
     expect(results[0].info.title).toBe("Test API");
   });
 
@@ -83,7 +90,7 @@ describe("缓存命中与 TTL 过期", () => {
     await getProjectDoc(sampleProject);
     await getProjectDoc(sampleProject);
     expect(fetchJsonMock).toHaveBeenCalledTimes(1);
-    expect(getCached("proj_test1")).toBeDefined();
+    expect(await getCached("proj_test1")).toBeDefined();
   });
 
   it("TTL 过期后重新拉取", async () => {
@@ -101,7 +108,7 @@ describe("缓存命中与 TTL 过期", () => {
     // 超过 2h 过期，重新拉取
     vi.advanceTimersByTime(2 * 60 * 60 * 1000 + 1); // +2h1ms
     // getCached 此时应返回 undefined（过期）
-    expect(getCached("proj_test1")).toBeUndefined();
+    expect(await getCached("proj_test1")).toBeUndefined();
     await getProjectDoc(sampleProject);
     expect(fetchJsonMock).toHaveBeenCalledTimes(2);
 
@@ -115,8 +122,8 @@ describe("invalidateProject", () => {
     await getProjectDoc(sampleProject);
     expect(fetchJsonMock).toHaveBeenCalledTimes(1);
 
-    invalidateProject("proj_test1");
-    expect(getCached("proj_test1")).toBeUndefined();
+    await invalidateProject("proj_test1");
+    expect(await getCached("proj_test1")).toBeUndefined();
 
     await getProjectDoc(sampleProject);
     expect(fetchJsonMock).toHaveBeenCalledTimes(2);
@@ -129,7 +136,7 @@ describe("GC", () => {
     vi.useFakeTimers();
 
     await getProjectDoc(sampleProject);
-    expect(getCached("proj_test1")).toBeDefined();
+    expect(await getCached("proj_test1")).toBeDefined();
 
     // 启动 GC（10min 间隔）
     startCacheGc();
@@ -138,8 +145,46 @@ describe("GC", () => {
     vi.advanceTimersByTime(3 * 60 * 60 * 1000); // 3h
     // 触发 GC 扫描（advanceTimersByTime 会触发 setInterval 回调）
     vi.advanceTimersByTime(10 * 60 * 1000); // 10min → 触发一次 GC
-    expect(getCached("proj_test1")).toBeUndefined();
+    expect(await getCached("proj_test1")).toBeUndefined();
 
     vi.useRealTimers();
+  });
+});
+
+describe("reinitCache", () => {
+  it("根据配置重建为 memory 缓存并设置 TTL", async () => {
+    fetchJsonMock.mockResolvedValue(sampleDoc);
+    await reinitCache({
+      mcp_client_token: "",
+      admin_port: 0,
+      cache_type: "memory",
+      cache_ttl_ms: 1800000,
+    });
+    expect(getCacheKind()).toBe("memory");
+
+    await getProjectDoc(sampleProject);
+    // 30min 内命中
+    vi.useFakeTimers();
+    vi.advanceTimersByTime(29 * 60 * 1000);
+    expect(await getCached("proj_test1")).toBeDefined();
+    // 超过 30min 过期
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    expect(await getCached("proj_test1")).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("切换缓存类型后清空旧缓存", async () => {
+    fetchJsonMock.mockResolvedValue(sampleDoc);
+    // 先填充 memory 缓存
+    await setCacheStoreForTest(new MemoryCacheStore());
+    await getProjectDoc(sampleProject);
+    expect(await getCached("proj_test1")).toBeDefined();
+
+    // reinit 为新 memory store → 旧缓存应消失
+    await reinitCache({ mcp_client_token: "", admin_port: 0, cache_type: "memory" });
+    expect(await getCached("proj_test1")).toBeUndefined();
+    // 重新拉取
+    await getProjectDoc(sampleProject);
+    expect(fetchJsonMock).toHaveBeenCalled();
   });
 });

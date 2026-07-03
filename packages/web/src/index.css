@@ -1,3 +1,95 @@
+/* highlight.js GitHub 主题（代码块语法高亮）— 必须在 @tailwind 之前 */
+@import "highlight.js/styles/github.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Markdown 渲染样式 — 接口详情弹层 */
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #374151;
+}
+.markdown-body h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  color: #1f2937;
+}
+.markdown-body h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+  color: #1f2937;
+}
+.markdown-body p {
+  margin: 0.5rem 0;
+}
+.markdown-body strong {
+  font-weight: 600;
+  color: #111827;
+}
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  background: #f3f4f6;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  color: #db2777;
+}
+.markdown-body pre {
+  margin: 0.5rem 0;
+  border-radius: 6px;
+  overflow-x: auto;
+  /* 长文本代码块（如含 // 注释的原始响应）允许垂直增长 + 水平滚动 */
+  max-height: none;
+}
+.markdown-body pre code {
+  display: block;
+  padding: 0.75rem 1rem;
+  background: #f6f8fa;
+  color: #24292f;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  /* text 代码块（非高亮）长行换行，避免横向溢出截断 */
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* 高亮代码块（hljs）保持原始不换行，走横向滚动 */
+.markdown-body pre code.hljs {
+  white-space: pre;
+  word-break: normal;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #e5e7eb;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+.markdown-body th {
+  background: #f9fafb;
+  font-weight: 600;
+}
+.markdown-body ul {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.markdown-body li {
+  margin: 0.15rem 0;
+}
+.markdown-body blockquote {
+  border-left: 3px solid #fbbf24;
+  background: #fffbeb;
+  padding: 0.4rem 0.75rem;
+  margin: 0.5rem 0;
+  color: #92400e;
+}

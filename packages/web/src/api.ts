@@ -58,6 +58,30 @@ export interface SecurityInfo {
   mcpClientToken: string;
   port: number;
   mcpEndpoint: string;
+  cache?: CacheConfigInfo;
+}
+
+/** Redis 连接配置（展示用，url 已脱敏） */
+export interface CacheRedisInfo {
+  url: string;
+  keyPrefix?: string;
+  tls?: boolean;
+}
+
+/** 缓存配置信息（来自后端 security 响应） */
+export interface CacheConfigInfo {
+  type: "memory" | "redis";
+  ttlMs?: number;
+  redis?: CacheRedisInfo;
+  /** 当前实际生效的缓存类型 */
+  activeKind: "memory" | "redis";
+}
+
+/** 缓存设置更新入参 */
+export interface CacheSettingsInput {
+  cache_type?: "memory" | "redis";
+  cache_ttl_ms?: number;
+  cache_redis?: { url: string; keyPrefix?: string; tls?: boolean };
 }
 
 export interface TestResult {
@@ -79,6 +103,11 @@ export interface ProjectApis {
   title: string;
   count: number;
   apis: ApiItem[];
+}
+
+/** 单个接口详情（Markdown 文本，由后端 formatApiDetail 产出） */
+export interface ApiDetail {
+  markdown: string;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -121,11 +150,31 @@ export const api = {
   testConnection: (id: string) =>
     request<TestResult>(`/admin/api/projects/${id}/test`, { method: "POST" }),
 
+  refreshProject: (id: string) =>
+    request<TestResult>(`/admin/api/projects/${id}/refresh`, { method: "POST" }),
+
   getProjectApis: (id: string, keyword?: string) =>
     request<ProjectApis>(`/admin/api/projects/${id}/apis${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ""}`),
+
+  getApiDetail: (id: string, path: string, method: string) =>
+    request<ApiDetail>(
+      `/admin/api/projects/${id}/apis/detail?path=${encodeURIComponent(path)}&method=${encodeURIComponent(method)}`,
+    ),
 
   getSecurity: () => request<SecurityInfo>("/admin/api/security"),
 
   resetToken: () =>
     request<{ newToken: string }>("/admin/api/security/reset-token", { method: "POST" }),
+
+  testCacheSettings: (data: CacheSettingsInput) =>
+    request<{ ok: boolean; error?: string }>("/admin/api/cache-settings/test", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateCacheSettings: (data: CacheSettingsInput) =>
+    request<{ ok: boolean; message?: string }>("/admin/api/cache-settings", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 };

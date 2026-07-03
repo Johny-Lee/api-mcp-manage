@@ -12,6 +12,7 @@ import {
   updateProject,
   removeProject,
   resetMcpToken,
+  updateCacheSettings,
   generateApiKey,
   generateProjectId,
 } from "./index.js";
@@ -138,6 +139,45 @@ describe("Token 重置", () => {
     expect(newToken).not.toBe(oldToken);
     expect(c.settings.mcp_client_token).toBe(newToken);
     expect(newToken).toMatch(/^mcp_key_/);
+  });
+});
+
+describe("缓存设置更新", () => {
+  it("updateCacheSettings 设置 redis 类型 + TTL 并持久化", async () => {
+    const config = await loadConfig(configPath);
+    const result = await updateCacheSettings(config, {
+      cache_type: "redis",
+      cache_ttl_ms: 3600000,
+      cache_redis: { url: "redis://localhost:6379", keyPrefix: "test:" },
+    }, configPath);
+    expect(result.settings.cache_type).toBe("redis");
+    expect(result.settings.cache_ttl_ms).toBe(3600000);
+    expect(result.settings.cache_redis?.url).toBe("redis://localhost:6379");
+    // 持久化校验：重新加载
+    const reloaded = await loadConfig(configPath);
+    expect(reloaded.settings.cache_type).toBe("redis");
+    expect(reloaded.settings.cache_redis?.url).toBe("redis://localhost:6379");
+  });
+
+  it("cache_type=redis 但未提供 url 抛错", async () => {
+    const config = await loadConfig(configPath);
+    await expect(
+      updateCacheSettings(config, { cache_type: "redis" }, configPath),
+    ).rejects.toThrow(/url/);
+  });
+
+  it("cache_ttl_ms <=0 抛错", async () => {
+    const config = await loadConfig(configPath);
+    await expect(
+      updateCacheSettings(config, { cache_ttl_ms: 0 }, configPath),
+    ).rejects.toThrow(/>0/);
+  });
+
+  it("切回 memory 类型正常", async () => {
+    const config = await loadConfig(configPath);
+    await updateCacheSettings(config, { cache_type: "redis", cache_redis: { url: "redis://localhost:6379" } }, configPath);
+    const result = await updateCacheSettings(config, { cache_type: "memory" }, configPath);
+    expect(result.settings.cache_type).toBe("memory");
   });
 });
 

@@ -5,7 +5,7 @@
  * HTML desc 清理、HTTP 方法映射、非法 method 跳过。
  */
 import { describe, it, expect } from "vitest";
-import { convertYapiToOpenApi } from "./yapi.js";
+import { convertYapiToOpenApi, formatProjectDetail, type YapiProjectDetail } from "./yapi.js";
 
 // @ts-expect-error — 测试用最小 YApi 详情结构
 const baseDetail = {
@@ -107,28 +107,38 @@ describe("convertYapiToOpenApi — res_body", () => {
     expect((schema.properties as Record<string, unknown>).token).toBeDefined();
   });
 
-  it("res_body_is_json_schema=false → 不生成响应 schema（即使有 res_body 文本）", () => {
+  it("res_body_is_json_schema=false 且 res_body 非 JSON 文本 → 降级为字符串描述 schema", () => {
     const doc = convertYapiToOpenApi([
       { ...baseDetail, title: "t", method: "GET", path: "/raw", res_body_type: "json", res_body: "just text", res_body_is_json_schema: false },
     ], "Demo");
     const resp = doc.paths["/raw"].get!.responses["200"];
-    // 不解析为 schema，content 不存在
-    expect(resp.content).toBeUndefined();
+    // 非 JSON 文本 → 包成 string schema（不再丢弃）
+    expect(resp.content).toBeDefined();
+    const schema = resp.content!["application/json"].schema as Record<string, unknown>;
+    expect(schema.type).toBe("string");
+    expect(schema.description).toBe("just text");
   });
 
-  it("res_body_is_json_schema 未设置 → 不解析（保守，避免误把普通 JSON 当 schema）", () => {
+  it("res_body_is_json_schema 未设置 → 解析为具体响应示例（非 schema 形态时）", () => {
     const doc = convertYapiToOpenApi([
       { ...baseDetail, title: "t", method: "GET", path: "/unset", res_body_type: "json", res_body: '{"a":1}' },
     ], "Demo");
-    expect(doc.paths["/unset"].get!.responses["200"].content).toBeUndefined();
+    const content = doc.paths["/unset"].get!.responses["200"].content!;
+    // 不是 schema 形态 → 视为具体响应示例：宽松 object schema + example
+    expect(content).toBeDefined();
+    const schema = content["application/json"].schema as Record<string, unknown>;
+    expect(schema.type).toBe("object");
+    expect(content["application/json"].example).toEqual({ a: 1 });
   });
 
-  it("res_body schema 解析失败 → 降级不崩", () => {
+  it("res_body schema 解析失败 → 降级为 string 且保留完整原始文本", () => {
     const doc = convertYapiToOpenApi([
       { ...baseDetail, title: "t", method: "GET", path: "/bad", res_body: "{not json", res_body_is_json_schema: true },
     ], "Demo");
     const schema = doc.paths["/bad"].get!.responses["200"].content!["application/json"].schema as Record<string, unknown>;
     expect(schema.type).toBe("string");
+    // 不截断，保留完整原始文本
+    expect(schema.description).toBe("{not json");
   });
 });
 
@@ -160,5 +170,77 @@ describe("convertYapiToOpenApi — 边界", () => {
     ], "Demo");
     expect(doc.paths["/item"].get).toBeDefined();
     expect(doc.paths["/item"].delete).toBeDefined();
+  });
+});
+
+describe("convertYapiToOpenApi — summary 菜单名拼接", () => {
+  it("有 catname 时 summary 为 接口名「菜单名」", () => {
+    const doc = convertYapiToOpenApi([
+      { ...baseDetail, title: "登录", catname: "用户管理", method: "POST", path: "/user/login" },
+    ], "Demo");
+    expect(doc.paths["/user/login"].post!.summary).toBe("登录「用户管理」");
+  });
+
+  it("无 catname 时 summary 回退为接口名", () => {
+    const doc = convertYapiToOpenApi([
+      { ...baseDetail, title: "登录", method: "POST", path: "/user/login" },
+    ], "Demo");
+    expect(doc.paths["/user/login"].post!.summary).toBe("登录");
+  });
+
+  it("catname 为空字符串时 summary 回退为接口名", () => {
+    const doc = convertYapiToOpenApi([
+      { ...baseDetail, title: "登录", catname: "", method: "POST", path: "/user/login" },
+    ], "Demo");
+    expect(doc.paths["/user/login"].post!.summary).toBe("登录");
+  });
+
+  it("多个不同菜单的接口各自拼接正确菜单名", () => {
+    const doc = convertYapiToOpenApi([
+      { ...baseDetail, _id: 1, title: "列表", catname: "用户", method: "GET", path: "/user/list" },
+      { ...baseDetail, _id: 2, title: "列表", catname: "订单", method: "GET", path: "/order/list" },
+    ], "Demo");
+    expect(doc.paths["/user/list"].get!.summary).toBe("列表「用户」");
+    expect(doc.paths["/order/list"].get!.summary).toBe("列表「订单」");
+  });
+});
+
+describe("formatProjectDetail — 项目详情格式化", () => {
+  const detail: YapiProjectDetail = {
+    _id: 92,
+    name: "输入法",
+    basepath: "",
+    project_type: "public",
+    icon: "mobile",
+    env: [
+      { _id: "1", name: "正式环境", domain: "https://app.edujia.com", header: [{ name: "token", value: "" }] },
+      { _id: "2", name: "测试环境", domain: "http://123.57.228.223:8020", header: [] },
+    ],
+  };
+
+  it("生成项目名与环境配置表", () => {
+    const md = formatProjectDetail("输入法", "proj_1", detail);
+    expect(md).toContain("输入法 (ID: proj_1)");
+    expect(md).toContain("**项目名**: 输入法");
+    expect(md).toContain("#### 环境配置");
+    expect(md).toContain("| 环境名 | 域名 | 公共 Header |");
+    expect(md).toContain("正式环境");
+    expect(md).toContain("`https://app.edujia.com`");
+    expect(md).toContain("token");
+  });
+
+  it("无环境配置时显示提示", () => {
+    const md = formatProjectDetail("Demo", "proj_1", { _id: 1, name: "Demo" });
+    expect(md).toContain("未配置环境");
+  });
+
+  it("header 为空时显示 —", () => {
+    const md = formatProjectDetail("输入法", "proj_1", detail);
+    expect(md).toContain("测试环境");
+    expect(md).toContain("`http://123.57.228.223:8020`");
+    // 测试环境无 header → 显示 —
+    const testRow = md.split("\n").find((l) => l.includes("测试环境"));
+    expect(testRow).toBeDefined();
+    expect(testRow!).toContain("—");
   });
 });

@@ -8,20 +8,43 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerTools } from "./tools/index.js";
 import { StaticKeyAuthProvider, createAdminAuth } from "./auth/index.js";
-import { startCacheGc, stopCacheGc, invalidateProject, getProjectDoc } from "./swagger/cache.js";
-import { filterApiList } from "./swagger/format.js";
+import { startCacheGc, stopCacheGc, invalidateProject, getProjectDoc, getCacheKind, reinitCache, testRedis, clearCache } from "./swagger/cache.js";
+import { getCacheConfigSummary } from "./swagger/cache-store.js";
+import { filterApiList, formatApiDetail, formatNotFound } from "./swagger/format.js";
+import { derefOperation } from "./tools/index.js";
+import type { OpenApiDocumentLike } from "./swagger/types-helpers.js";
+import type { OpenApiOperation } from "./types.js";
 import { logger } from "./utils/logger.js";
 import type { McpProjectsConfig } from "./types.js";
-import { loadConfig, addProject, updateProject, removeProject, resetMcpToken, generateAdminSessionToken } from "./config/index.js";
+import { loadConfig, addProject, updateProject, removeProject, resetMcpToken, generateAdminSessionToken, updateCacheSettings, type CacheSettingsPatch } from "./config/index.js";
 
 // ──────────────────────────────────────────────
 // 全局状态
 // ──────────────────────────────────────────────
 let config: McpProjectsConfig;
-let mcpServer: McpServer;
 let adminSessionToken: string;
 let currentPort: number;
 let httpServer: HttpServer | null = null;
+/** 记录启动参数，供 restartServer 复用 */
+let startOptions: StartServerOptions = {};
+
+/**
+ * 按请求创建独立的 McpServer 实例。
+ *
+ * Streamable HTTP 的 stateless 模式（sessionIdGenerator: undefined）下，每个请求
+ * 必须拥有独立的协议状态：一个 McpServer 只能 connect 到一个 transport，再次 connect
+ * 会抛 "Already connected to a transport..."。因此不能复用全局 server，而要在每个
+ * 请求内新建 server + transport，请求结束后各自 close。
+ */
+function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: "api-mcp-manager",
+    version: "1.3.0",
+  });
+  // 注册工具（动态读取配置，支持热更新）
+  registerTools(server, () => config);
+  return server;
+}
 
 // ──────────────────────────────────────────────
 // 端口自适应探测
@@ -44,27 +67,29 @@ async function findAvailablePort(startPort: number): Promise<number> {
 // ──────────────────────────────────────────────
 // 服务器初始化
 // ──────────────────────────────────────────────
-export async function startServer(options: {
+export interface StartServerOptions {
   port?: number;
   configPath?: string;
   webDistPath?: string;
   skipWeb?: boolean;
-} = {}): Promise<{ port: number; adminSessionToken: string; mcpClientToken: string }> {
+}
+
+export async function startServer(
+  options: StartServerOptions = {},
+): Promise<{ port: number; adminSessionToken: string; mcpClientToken: string }> {
+  startOptions = options;
+  // 重启时复用已有 adminSessionToken，避免踢掉已登录用户
+  if (!adminSessionToken) {
+    adminSessionToken = generateAdminSessionToken();
+  }
+
   // 加载配置
   config = await loadConfig(options.configPath);
-  adminSessionToken = generateAdminSessionToken();
 
-  // 缓存 GC
+  // 根据配置初始化缓存（内存/Redis + TTL）
+  await reinitCache(config.settings);
   startCacheGc();
-
-  // 创建 MCP Server
-  mcpServer = new McpServer({
-    name: "api-mcp-manager",
-    version: "1.3.0",
-  });
-
-  // 注册工具（动态读取配置，支持热更新）
-  registerTools(mcpServer, () => config);
+  const cacheMode = getCacheKind() === "redis" ? "Redis" : "Memory";
 
   // ──────────────────────────────────────────
   // Express 应用
@@ -91,17 +116,19 @@ export async function startServer(options: {
 
   // ──────────────────────────────────────────
   // MCP Streamable HTTP 端点 POST /mcp
-  // Stateless 模式：每次请求创建新的 transport 实例
+  // Stateless 模式：每次请求创建新的 server + transport 实例
   // ──────────────────────────────────────────
   const staticKeyAuth = new StaticKeyAuthProvider(() => config);
 
   app.post("/mcp", async (req, res) => {
     await staticKeyAuth.validate(req, res, async () => {
+      // Stateless 模式：每次请求创建新的 server + transport 实例
+      const server = createMcpServer();
       const reqTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
       try {
-        await mcpServer.connect(reqTransport);
+        await server.connect(reqTransport);
         await reqTransport.handleRequest(req, res, req.body);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -111,19 +138,22 @@ export async function startServer(options: {
           res.status(500).json({ error: "Internal MCP error", detail: msg });
         }
       } finally {
+        // 请求级实例，结束后各自关闭
         await reqTransport.close().catch(() => {});
+        await server.close().catch(() => {});
       }
     });
   });
 
-  // SSE 升级（GET /mcp — stateless 模式每次新 transport）
+  // SSE 升级（GET /mcp — stateless 模式每次新 server + transport）
   app.get("/mcp", async (req, res) => {
     await staticKeyAuth.validate(req, res, async () => {
+      const server = createMcpServer();
       const reqTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
       try {
-        await mcpServer.connect(reqTransport);
+        await server.connect(reqTransport);
         await reqTransport.handleRequest(req, res);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -133,6 +163,7 @@ export async function startServer(options: {
         }
       } finally {
         await reqTransport.close().catch(() => {});
+        await server.close().catch(() => {});
       }
     });
   });
@@ -173,7 +204,6 @@ export async function startServer(options: {
         options.configPath,
       );
       config = result.config;
-      mcpServer.sendToolListChanged();
       res.status(201).json(result.project);
     } catch (err) {
       logger.error("添加项目失败", { error: String(err) });
@@ -199,8 +229,7 @@ export async function startServer(options: {
         return;
       }
       config = await updateProject(config, id, patch as never, options.configPath);
-      invalidateProject(id);
-      mcpServer.sendToolListChanged();
+      await invalidateProject(id);
       res.json({ ok: true });
     } catch (err) {
       logger.error("更新项目失败", { error: String(err) });
@@ -213,8 +242,7 @@ export async function startServer(options: {
     try {
       const { id } = req.params;
       config = await removeProject(config, id, options.configPath);
-      invalidateProject(id);
-      mcpServer.sendToolListChanged();
+      await invalidateProject(id);
       res.json({ ok: true });
     } catch (err) {
       logger.error("删除项目失败", { error: String(err) });
@@ -230,7 +258,7 @@ export async function startServer(options: {
         res.status(404).json({ error: "项目不存在" });
         return;
       }
-      invalidateProject(project.id);
+      await invalidateProject(project.id);
       const doc = await getProjectDoc(project);
       res.json({
         ok: true,
@@ -239,6 +267,29 @@ export async function startServer(options: {
         version: doc.info.version,
       });
     } catch (err) {
+      res.json({ ok: false, error: errMsg(err) });
+    }
+  });
+
+  // 刷新项目缓存（手动触发重新拉取）
+  app.post("/admin/api/projects/:id/refresh", adminAuth, async (req, res) => {
+    try {
+      const project = config.projects.find((p: McpProjectsConfig["projects"][number]) => p.id === req.params.id);
+      if (!project) {
+        res.status(404).json({ error: "项目不存在" });
+        return;
+      }
+      // 先失效缓存，再立即拉取最新文档
+      await invalidateProject(project.id);
+      const doc = await getProjectDoc(project);
+      res.json({
+        ok: true,
+        title: doc.info.title,
+        pathCount: Object.keys(doc.paths).length,
+        version: doc.info.version,
+      });
+    } catch (err) {
+      logger.error("刷新缓存失败", { projectId: req.params.id, error: String(err) });
       res.json({ ok: false, error: errMsg(err) });
     }
   });
@@ -275,12 +326,60 @@ export async function startServer(options: {
     }
   });
 
+  // 获取单个接口详情 Markdown（供后台「点进接口看详情」）
+  // 复用 get_api_details MCP 工具的底层函数，保证单一数据源
+  app.get("/admin/api/projects/:id/apis/detail", adminAuth, async (req, res) => {
+    try {
+      const project = config.projects.find((p: McpProjectsConfig["projects"][number]) => p.id === req.params.id);
+      if (!project) {
+        res.status(404).json({ error: "项目不存在" });
+        return;
+      }
+      const path = (req.query.path as string) || "";
+      const method = ((req.query.method as string) || "").toLowerCase();
+      if (!path || !method) {
+        res.status(400).json({ error: "path 与 method 为必填参数" });
+        return;
+      }
+
+      const doc = await getProjectDoc(project);
+      const pathItem = doc.paths[path];
+      const op = pathItem ? (pathItem[method] as OpenApiOperation | undefined) : undefined;
+      if (!pathItem || !op) {
+        // 接口不存在：返回友好提示 markdown（HTTP 200，前端按 markdown 渲染）
+        res.json({ markdown: formatNotFound(project.name, path, method) });
+        return;
+      }
+
+      // 局部 $ref 解引用后格式化为 Markdown（与 get_api_details 工具一致）
+      const derefedOp = derefOperation(op, doc as unknown as OpenApiDocumentLike);
+      const markdown = formatApiDetail(project.name, path, method, derefedOp);
+      res.json({ markdown });
+    } catch (err) {
+      logger.error("获取接口详情失败", { error: String(err) });
+      res.status(500).json({ error: errMsg(err) });
+    }
+  });
+
   // 安全设置
   app.get("/admin/api/security", adminAuth, (_req, res) => {
+    const cacheSummary = getCacheConfigSummary();
     res.json({
       mcpClientToken: config.settings.mcp_client_token,
       port: currentPort,
       mcpEndpoint: `/mcp`,
+      cache: {
+        type: config.settings.cache_type || "memory",
+        ttlMs: config.settings.cache_ttl_ms,
+        redis: config.settings.cache_redis
+          ? {
+              url: config.settings.cache_redis.url.replace(/\/\/.*@/, "//***@"),
+              keyPrefix: config.settings.cache_redis.keyPrefix,
+              tls: config.settings.cache_redis.tls,
+            }
+          : undefined,
+        activeKind: cacheSummary.kind,
+      },
     });
   });
 
@@ -288,6 +387,65 @@ export async function startServer(options: {
     const result = await resetMcpToken(config, options.configPath);
     config = result.config;
     res.json({ newToken: result.newToken });
+  });
+
+  // 测试缓存连接（仅 Redis 需要测试，不保存配置）
+  app.post("/admin/api/cache-settings/test", adminAuth, async (req, res) => {
+    try {
+      const { cache_type, cache_redis } = req.body || {};
+      if (cache_type !== "redis") {
+        // memory 模式无需测试，直接通过
+        res.json({ ok: true });
+        return;
+      }
+      if (!cache_redis?.url) {
+        res.json({ ok: false, error: "Redis 连接地址未配置" });
+        return;
+      }
+      const result = await testRedis({
+        mcp_client_token: "",
+        admin_port: 0,
+        cache_type: "redis",
+        cache_redis,
+      });
+      res.json(result);
+    } catch (err) {
+      res.json({ ok: false, error: errMsg(err) });
+    }
+  });
+
+  // 更新缓存设置（保存配置 → 清缓存 → 重启服务）
+  app.put("/admin/api/cache-settings", adminAuth, async (req, res) => {
+    try {
+      const patch: CacheSettingsPatch = {};
+      const { cache_type, cache_ttl_ms, cache_redis } = req.body || {};
+      if (cache_type !== undefined) patch.cache_type = cache_type;
+      if (cache_ttl_ms !== undefined) patch.cache_ttl_ms = cache_ttl_ms;
+      if (cache_redis !== undefined) patch.cache_redis = cache_redis;
+
+      config = await updateCacheSettings(config, patch, options.configPath);
+      logger.info("缓存设置已更新，准备重启服务", { cacheType: config.settings.cache_type });
+
+      // 清除当前缓存
+      await clearCache();
+
+      res.json({
+        ok: true,
+        message: "缓存设置已保存，服务正在重启",
+        cache: {
+          type: config.settings.cache_type || "memory",
+          ttlMs: config.settings.cache_ttl_ms,
+        },
+      });
+
+      // 异步重启服务（不阻塞响应）
+      restartServer().catch((err) => {
+        logger.error("重启服务失败", { error: String(err) });
+      });
+    } catch (err) {
+      logger.error("更新缓存设置失败", { error: String(err) });
+      res.status(400).json({ error: errMsg(err) });
+    }
   });
 
   // 启动横幅信息
@@ -329,6 +487,7 @@ export async function startServer(options: {
       `📡 MCP Endpoint (Streamable HTTP):  http://localhost:${currentPort}/mcp`,
       `🛠️  Web Dashboard:                   http://localhost:${currentPort}/admin?token=${adminSessionToken}`,
       `🔑 MCP Client Token:                 ${config.settings.mcp_client_token}`,
+      `💾 缓存模式:                          ${cacheMode}`,
       "─────────────────────────────────────────────────────",
       "按 Ctrl+C 停止服务器",
       "",
@@ -358,11 +517,32 @@ export async function startServer(options: {
 // ──────────────────────────────────────────────
 export async function stopServer(): Promise<void> {
   logger.info("正在关闭服务器...");
-  stopCacheGc();
+  await stopCacheGc();
   if (httpServer) {
     await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
+    httpServer = null;
   }
   logger.info("服务器已关闭");
+}
+
+/**
+ * 原地重启服务（用于缓存配置变更后生效）
+ *
+ * 停止旧 HTTP server → 重新 startServer（复用 adminSessionToken、端口、configPath）。
+ * adminSessionToken 与 currentPort 保持不变，已登录用户无需重新认证。
+ */
+export async function restartServer(): Promise<void> {
+  logger.info("正在重启服务...");
+  // 停止缓存（关闭连接/GC）
+  await stopCacheGc();
+  // 关闭 HTTP server
+  if (httpServer) {
+    await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
+    httpServer = null;
+  }
+  // 重新启动（复用 adminSessionToken）
+  await startServer(startOptions);
+  logger.info("服务已重启", { port: currentPort });
 }
 
 // ──────────────────────────────────────────────

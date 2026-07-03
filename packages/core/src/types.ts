@@ -42,6 +42,29 @@ export interface McpSettings {
   mcp_client_token: string;
   /** 管理后台端口 */
   admin_port: number;
+  /**
+   * 接口文档缓存 TTL（毫秒），默认 2 小时。
+   * 未设置或 <=0 时使用默认值。对内存与 Redis 缓存均生效。
+   */
+  cache_ttl_ms?: number;
+  /**
+   * 缓存类型：
+   * - memory（默认）：单机内存缓存
+   * - redis：跨进程共享的 Redis 缓存
+   */
+  cache_type?: "memory" | "redis";
+  /** Redis 连接配置（cache_type=redis 时必填） */
+  cache_redis?: CacheRedisConfig;
+}
+
+/** Redis 缓存连接配置 */
+export interface CacheRedisConfig {
+  /** 连接 URL，如 redis://localhost:6379 或 rediss://... */
+  url: string;
+  /** key 前缀，默认 api-mcp:cache: */
+  keyPrefix?: string;
+  /** 是否启用 TLS（rediss:// 自动启用） */
+  tls?: boolean;
 }
 
 /** mcp-projects.json 完整结构 */

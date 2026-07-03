@@ -265,3 +265,47 @@ export async function resetMcpToken(
   await saveConfig(config, overridePath);
   return { config, newToken };
 }
+
+/** 缓存设置更新入参 */
+export interface CacheSettingsPatch {
+  /** 缓存 TTL（毫秒），>0 生效 */
+  cache_ttl_ms?: number;
+  /** 缓存类型 */
+  cache_type?: "memory" | "redis";
+  /** Redis 连接配置（cache_type=redis 时必填） */
+  cache_redis?: import("../types.js").CacheRedisConfig;
+}
+
+/**
+ * 更新缓存设置并持久化
+ *
+ * 校验规则：
+ * - cache_type=redis 时 cache_redis.url 必填
+ * - cache_ttl_ms 若提供必须 >0
+ */
+export async function updateCacheSettings(
+  config: McpProjectsConfig,
+  patch: CacheSettingsPatch,
+  overridePath?: string,
+): Promise<McpProjectsConfig> {
+  if (patch.cache_type) {
+    if (patch.cache_type === "redis") {
+      if (!patch.cache_redis?.url) {
+        throw new Error("cache_type=redis 时必须配置 cache_redis.url");
+      }
+    }
+    config.settings.cache_type = patch.cache_type;
+  }
+  if (patch.cache_redis !== undefined) {
+    // 显式传 null 清除，否则赋值
+    config.settings.cache_redis = patch.cache_redis || undefined;
+  }
+  if (patch.cache_ttl_ms !== undefined) {
+    if (patch.cache_ttl_ms <= 0) {
+      throw new Error("cache_ttl_ms 必须 >0");
+    }
+    config.settings.cache_ttl_ms = patch.cache_ttl_ms;
+  }
+  await saveConfig(config, overridePath);
+  return config;
+}

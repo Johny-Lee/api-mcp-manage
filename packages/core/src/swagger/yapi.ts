@@ -36,6 +36,8 @@ interface YapiInterfaceListItem {
   _id: number;
   project_id: number;
   catid: number;
+  /** 菜单（分类）名，来自 /api/interface/list_menu */
+  catname?: string;
   title: string;
   path: string;
   method: string;
@@ -64,10 +66,10 @@ interface YapiInterfaceDetail extends YapiInterfaceListItem {
   req_body_is_json_schema?: boolean;
 }
 
-/** YApi list 端点返回的分页结构：{ count, total, list } */
-interface YapiListData {
-  count: number;
-  total: number;
+/** YApi list_menu 端点返回的菜单分组结构 */
+interface YapiMenuGroup {
+  _id: number;
+  name: string;
   list: YapiInterfaceListItem[];
 }
 
@@ -88,39 +90,38 @@ function buildUrl(baseUrl: string, path: string, params: Record<string, string>)
   return u.toString();
 }
 
-/** 拉取项目全部接口列表（自动分页） */
-async function fetchInterfaceList(
+/**
+ * 拉取项目全部接口列表（菜单分组接口，含分类名）
+ *
+ * 调用 /api/interface/list_menu，返回按菜单（分类）分组的接口列表。
+ * list_menu 一次返回全部接口（不分页），且每个接口附带所属菜单名（catname），
+ * 用于 summary 拼接「接口名「菜单名」」。
+ *
+ * @returns 展平后的接口列表，每项含 catname（菜单名）
+ */
+async function fetchInterfaceListMenu(
   baseUrl: string,
   projectId: string,
   token: string,
 ): Promise<YapiInterfaceListItem[]> {
-  const all: YapiInterfaceListItem[] = [];
-  const limit = 1000;
-  let page = 1;
-  // 单次拉取上限 1000；多数项目一页即可，循环兜底
-  for (;;) {
-    const url = buildUrl(baseUrl, "/api/interface/list", {
-      project_id: projectId,
-      token,
-      page: String(page),
-      limit: String(limit),
-    });
-    const res = (await fetchJson(url)) as YapiResponse<YapiListData | YapiInterfaceListItem[]>;
-    if (res.errcode !== 0) {
-      throw new Error(`YApi /api/interface/list 失败: ${res.errmsg} (errcode ${res.errcode})`);
-    }
-    // 兼容两种返回结构：新版 {count,total,list:[...]} 与旧版 data:[...]
-    const batch = Array.isArray(res.data)
-      ? res.data
-      : Array.isArray((res.data as YapiListData)?.list)
-        ? (res.data as YapiListData).list
-        : [];
-    all.push(...batch);
-    if (batch.length < limit) break; // 不足一页 → 结束
-    page++;
-    if (page > 50) break; // 安全上限
+  const url = buildUrl(baseUrl, "/api/interface/list_menu", {
+    project_id: projectId,
+    token,
+  });
+  const res = (await fetchJson(url)) as YapiResponse<YapiMenuGroup[]>;
+  if (res.errcode !== 0) {
+    throw new Error(`YApi /api/interface/list_menu 失败: ${res.errmsg} (errcode ${res.errcode})`);
   }
-  logger.debug("YApi 接口列表拉取完成", { projectId, count: all.length });
+  const groups = Array.isArray(res.data) ? res.data : [];
+  const all: YapiInterfaceListItem[] = [];
+  for (const group of groups) {
+    const menuName = group.name || "";
+    for (const item of group.list || []) {
+      // 注入菜单名，供后续 summary 拼接
+      all.push({ ...item, catname: menuName });
+    }
+  }
+  logger.debug("YApi 接口菜单列表拉取完成", { projectId, groupCount: groups.length, count: all.length });
   return all;
 }
 
@@ -141,6 +142,92 @@ async function fetchInterfaceDetail(
   return res.data;
 }
 
+// ──────────────────────────────────────────────
+// YApi 项目详情（/api/project/get）
+// ──────────────────────────────────────────────
+
+/** YApi 环境变量配置（含域名与公共 header） */
+export interface YapiEnv {
+  _id?: string;
+  name: string;
+  domain: string;
+  header?: { name: string; value: string }[];
+  global?: { name: string; value: string }[];
+}
+
+/** YApi 项目详情（/api/project/get 返回的 data 子集） */
+export interface YapiProjectDetail {
+  _id: number;
+  name: string;
+  basepath?: string;
+  project_type?: string;
+  icon?: string;
+  color?: string;
+  add_time?: number;
+  up_time?: number;
+  env?: YapiEnv[];
+  tag?: unknown[];
+  cat?: unknown[];
+}
+
+/** 拉取 YApi 项目详情（含环境配置） */
+export async function fetchYapiProjectDetail(
+  project: McpProject,
+): Promise<YapiProjectDetail> {
+  const baseUrl = project.baseUrl || "";
+  const token = project.token || "";
+  if (!baseUrl) throw new Error("YApi baseUrl 未配置");
+  if (!token) throw new Error("YApi token 未配置");
+
+  const url = buildUrl(baseUrl, "/api/project/get", { token });
+  const res = (await fetchJson(url)) as YapiResponse<YapiProjectDetail>;
+  if (res.errcode !== 0) {
+    throw new Error(`YApi /api/project/get 失败: ${res.errmsg} (errcode ${res.errcode})`);
+  }
+  logger.debug("YApi 项目详情拉取完成", { projectId: project.id, name: res.data.name });
+  return res.data;
+}
+
+/**
+ * 把 YApi 项目详情格式化为 Markdown。
+ * 重点展示各环境的域名与公共 header，供排查接口实际访问地址。
+ */
+export function formatProjectDetail(
+  projectName: string,
+  projectId: string,
+  detail: YapiProjectDetail,
+): string {
+  const lines: string[] = [];
+  lines.push(`### ${projectName} (ID: ${projectId}) - 项目详情`);
+  lines.push("");
+
+  lines.push(`**项目名**: ${detail.name}`);
+  if (detail.basepath) lines.push(`**basepath**: \`${detail.basepath}\``);
+  if (detail.project_type) lines.push(`**类型**: ${detail.project_type}`);
+  if (detail.icon) lines.push(`**图标**: ${detail.icon}`);
+  lines.push("");
+
+  // 环境配置
+  if (detail.env && detail.env.length) {
+    lines.push("#### 环境配置");
+    lines.push("");
+    lines.push("| 环境名 | 域名 | 公共 Header |");
+    lines.push("|--------|------|-------------|");
+    for (const e of detail.env) {
+      const headers = (e.header || [])
+        .filter((h) => h.name)
+        .map((h) => `${h.name}${h.value ? `: ${h.value}` : ""}`);
+      lines.push(`| ${e.name} | \`${e.domain}\` | ${headers.join("、") || "—"} |`);
+    }
+    lines.push("");
+  } else {
+    lines.push("_该项目未配置环境_");
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 /**
  * 从 YApi 项目拉取并组装为 OpenApiDocument
  *
@@ -155,7 +242,13 @@ export async function fetchYapiDocument(project: McpProject): Promise<OpenApiDoc
   if (!token) throw new Error("YApi token 未配置");
 
   logger.info("拉取 YApi 接口列表", { projectId: project.id, baseUrl });
-  const list = await fetchInterfaceList(baseUrl, projectId, token);
+  const list = await fetchInterfaceListMenu(baseUrl, projectId, token);
+
+  // 构建 _id → catname 映射（详情接口不返回菜单名，从列表注入）
+  const catnameMap = new Map<number, string>();
+  for (const item of list) {
+    catnameMap.set(item._id, item.catname || "");
+  }
 
   // 逐个拉取详情（并发受限，避免压垮 YApi）
   const details: YapiInterfaceDetail[] = [];
@@ -170,7 +263,13 @@ export async function fetchYapiDocument(project: McpProject): Promise<OpenApiDoc
         }),
       ),
     );
-    for (const d of results) if (d) details.push(d);
+    for (const d of results) {
+      if (d) {
+        // 注入菜单名（详情接口不返回 catname）
+        d.catname = catnameMap.get(d._id) || "";
+        details.push(d);
+      }
+    }
   }
 
   logger.info("YApi 接口详情拉取完成", { projectId: project.id, count: details.length });
@@ -191,15 +290,65 @@ function toBool(v: unknown): boolean {
 /** 安全解析 YApi 的 json-schema 字符串字段 */
 function parseSchema(raw: string | undefined, isSchema: boolean): Record<string, unknown> | undefined {
   if (!raw) return undefined;
-  // 非 schema（raw 文本）→ 包成简单 schema
-  if (!isSchema) return { type: "string", description: raw.slice(0, 200) };
+  // 非 schema（raw 文本）→ 包成简单 schema（保留完整文本，不截断）
+  if (!isSchema) return { type: "string", description: raw };
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
   } catch {
-    // 解析失败 → 降级为字符串描述
+    // 解析失败 → 降级为字符串描述（保留完整原始文本）
   }
-  return { type: "string", description: "(schema 解析失败)" };
+  return { type: "string", description: raw };
+}
+
+/** 判断一个解析后的 JSON 对象是否形如 JSON Schema */
+function looksLikeSchema(obj: Record<string, unknown>): boolean {
+  // JSON Schema 常见顶层标识：$schema / type / properties / items / required / allOf 等
+  const schemaKeys = ["$schema", "type", "properties", "items", "required", "allOf", "anyOf", "oneOf", "definitions"];
+  return schemaKeys.some((k) => Object.prototype.hasOwnProperty.call(obj, k));
+}
+
+/**
+ * 解析 YApi 响应体 res_body 为 OpenAPI response content。
+ *
+ * YApi 中 res_body_is_json_schema 可能为 true / false / undefined：
+ * - true → res_body 为 JSON Schema 字符串，直接解析为 schema
+ * - false/undefined → res_body 可能是具体响应示例 JSON 或非 schema 文本。
+ *   尝试解析：若解析后形如 JSON Schema（含 type/properties 等），作为 schema；
+ *   否则视为具体响应示例（example），并为其生成一个宽松的 object schema 占位，
+ *   保证下游格式化时「响应」部分有内容可展示。
+ *
+ * @returns { content } 或 undefined（res_body 为空时）
+ */
+function parseResponseBody(raw: string | undefined, isJsonSchema?: boolean): { content: Record<string, { schema?: Record<string, unknown>; example?: unknown }> } | undefined {
+  if (!raw) return undefined;
+
+  // 显式声明为 schema → 直接按 schema 解析
+  if (isJsonSchema === true) {
+    const schema = parseSchema(raw, true);
+    return schema ? { content: { "application/json": { schema } } } : undefined;
+  }
+
+  // 未声明或声明为非 schema → 尝试作为 JSON 解析后智能判定
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // 非 JSON 文本 → 降级为字符串描述的 schema（保留完整原始文本，不截断）
+    return { content: { "application/json": { schema: { type: "string", description: raw } } } };
+  }
+
+  // 解析结果为对象且形如 JSON Schema → 作为 schema
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && looksLikeSchema(parsed as Record<string, unknown>)) {
+    return { content: { "application/json": { schema: parsed as Record<string, unknown> } } };
+  }
+
+  // 否则视为具体响应示例：同时给出 example 与一个宽松的 object schema
+  const example = parsed;
+  const schema: Record<string, unknown> = Array.isArray(parsed)
+    ? { type: "array" }
+    : { type: "object" };
+  return { content: { "application/json": { schema, example } } };
 }
 
 /** YApi req_query / req_headers → OpenApi parameters */
@@ -279,28 +428,32 @@ export function convertYapiToOpenApi(
       }
     } else if (bodyType === "raw" && d.req_body_other) {
       requestBody = {
-        description: d.req_body_other.slice(0, 200),
+        description: d.req_body_other,
         content: { "text/plain": { schema: { type: "string" } } },
       };
     }
 
     // responses
-    // res_body_is_json_schema 显式为 true 时才解析为 schema；false 或未设置 → 不解析
-    // （真实 YApi 中 res_body_type=json 但 res_body_is_json_schema=false 时，res_body 可能是空或非 schema 文本）
+    // YApi 中 res_body_is_json_schema 可能为 true/false/undefined。未声明时 res_body
+    // 也可能是具体响应示例 JSON，不应直接丢弃。统一交给 parseResponseBody 智能判定。
     const responses: Record<string, import("../types.js").OpenApiResponse> = {};
-    const resSchema =
-      d.res_body_is_json_schema === true ? parseSchema(d.res_body, true) : undefined;
+    const resContent = parseResponseBody(d.res_body, d.res_body_is_json_schema);
     responses["200"] = {
       description: "响应",
-      ...(resSchema ? { content: { "application/json": { schema: resSchema } } } : {}),
+      ...(resContent ? { content: resContent.content } : {}),
     };
 
     // 描述优先用 markdown（更干净）；否则清理 HTML；都无则留空
     const rawDesc = d.markdown || d.desc || "";
     const cleanDesc = rawDesc.replace(/<[^>]+>/g, "").trim();
 
+    // summary 拼接：接口名「菜单名」（有菜单名时）
+    const title = d.title || "";
+    const catname = d.catname || "";
+    const summary = catname ? `${title}「${catname}」` : title;
+
     paths[path][method as "get" | "post" | "put" | "delete" | "patch" | "options" | "head"] = {
-      summary: d.title || "",
+      summary,
       description: cleanDesc || undefined,
       tags: d.catid ? [String(d.catid)] : undefined,
       parameters: parameters.length ? parameters : undefined,
