@@ -12,6 +12,7 @@ import { startCacheGc, stopCacheGc, invalidateProject, getProjectDoc, getCacheKi
 import { getCacheConfigSummary } from "./swagger/cache-store.js";
 import { filterApiList, formatApiDetail, formatNotFound } from "./swagger/format.js";
 import { derefOperation } from "./tools/index.js";
+import { fetchYapiProjectDetail, isYapiProject } from "./swagger/yapi.js";
 import type { OpenApiDocumentLike } from "./swagger/types-helpers.js";
 import type { OpenApiOperation } from "./types.js";
 import { logger } from "./utils/logger.js";
@@ -353,7 +354,19 @@ export async function startServer(
 
       // 局部 $ref 解引用后格式化为 Markdown（与 get_api_details 工具一致）
       const derefedOp = derefOperation(op, doc as unknown as OpenApiDocumentLike);
-      const markdown = formatApiDetail(project.name, path, method, derefedOp);
+
+      // YApi 源项目：拉取项目详情获取环境域名，在接口详情中展示
+      let envs;
+      if (isYapiProject(project)) {
+        try {
+          const detail = await fetchYapiProjectDetail(project);
+          envs = detail.env;
+        } catch (err) {
+          logger.warn("接口详情拉取项目环境域名失败", { projectId: project.id, error: String(err) });
+        }
+      }
+
+      const markdown = formatApiDetail(project.name, path, method, derefedOp, envs);
       res.json({ markdown });
     } catch (err) {
       logger.error("获取接口详情失败", { error: String(err) });

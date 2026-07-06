@@ -189,46 +189,6 @@ export async function fetchYapiProjectDetail(
 }
 
 /**
- * 把 YApi 项目详情格式化为 Markdown。
- * 重点展示各环境的域名与公共 header，供排查接口实际访问地址。
- */
-export function formatProjectDetail(
-  projectName: string,
-  projectId: string,
-  detail: YapiProjectDetail,
-): string {
-  const lines: string[] = [];
-  lines.push(`### ${projectName} (ID: ${projectId}) - 项目详情`);
-  lines.push("");
-
-  lines.push(`**项目名**: ${detail.name}`);
-  if (detail.basepath) lines.push(`**basepath**: \`${detail.basepath}\``);
-  if (detail.project_type) lines.push(`**类型**: ${detail.project_type}`);
-  if (detail.icon) lines.push(`**图标**: ${detail.icon}`);
-  lines.push("");
-
-  // 环境配置
-  if (detail.env && detail.env.length) {
-    lines.push("#### 环境配置");
-    lines.push("");
-    lines.push("| 环境名 | 域名 | 公共 Header |");
-    lines.push("|--------|------|-------------|");
-    for (const e of detail.env) {
-      const headers = (e.header || [])
-        .filter((h) => h.name)
-        .map((h) => `${h.name}${h.value ? `: ${h.value}` : ""}`);
-      lines.push(`| ${e.name} | \`${e.domain}\` | ${headers.join("、") || "—"} |`);
-    }
-    lines.push("");
-  } else {
-    lines.push("_该项目未配置环境_");
-    lines.push("");
-  }
-
-  return lines.join("\n");
-}
-
-/**
  * 从 YApi 项目拉取并组装为 OpenApiDocument
  *
  * @param project source=yapi 的项目配置

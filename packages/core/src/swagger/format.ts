@@ -1,4 +1,5 @@
 import type { OpenApiDocument, OpenApiOperation, OpenApiParameter } from "../types.js";
+import type { YapiEnv } from "./yapi.js";
 
 /**
  * Markdown 格式化工具
@@ -58,6 +59,7 @@ export function formatApiDetail(
   path: string,
   method: string,
   op: OpenApiOperation,
+  envs?: YapiEnv[],
 ): string {
   const lines: string[] = [];
   const upperMethod = method.toUpperCase();
@@ -69,6 +71,21 @@ export function formatApiDetail(
   if (op.description) lines.push(`\n${op.description}`);
   if (op.tags?.length) lines.push(`**标签**: ${op.tags.join(", ")}`);
   lines.push("");
+
+  // 环境域名（YApi 源项目展示，供确认接口实际访问地址）
+  if (envs && envs.length) {
+    lines.push("#### 环境域名");
+    lines.push("");
+    lines.push("| 环境名 | 域名 | 公共 Header |");
+    lines.push("|--------|------|-------------|");
+    for (const e of envs) {
+      const headers = (e.header || [])
+        .filter((h) => h.name)
+        .map((h) => `${h.name}${h.value ? `: ${h.value}` : ""}`);
+      lines.push(`| ${e.name} | \`${e.domain}\` | ${headers.join("、") || "—"} |`);
+    }
+    lines.push("");
+  }
 
   // Parameters
   if (op.parameters && op.parameters.length) {

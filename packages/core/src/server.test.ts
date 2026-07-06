@@ -75,7 +75,7 @@ describe("MCP 端点鉴权", () => {
     const { status, data } = await mcpCall(mcpToken, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, { Authorization: "", "X-MCP-Token": mcpToken });
     expect(status).toBe(200);
     const names = ((data as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name));
-    expect(names).toEqual(["list_projects", "get_api_list", "get_api_details", "get_project_detail"]);
+    expect(names).toEqual(["list_projects", "get_api_list", "get_api_details"]);
   });
 });
 

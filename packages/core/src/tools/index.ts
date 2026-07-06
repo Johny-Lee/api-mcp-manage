@@ -11,12 +11,13 @@ import {
   formatNotFound,
 } from "../swagger/format.js";
 import { logger } from "../utils/logger.js";
-import { fetchYapiProjectDetail, formatProjectDetail, isYapiProject } from "../swagger/yapi.js";
+import { fetchYapiProjectDetail, isYapiProject } from "../swagger/yapi.js";
 
 /**
  * 注册三个只读 MCP 工具
  *
  * 严格只读边界：所有工具仅读取与格式化，绝不执行/修改/发包。
+ * YApi 源项目展示单个接口时额外拉取项目详情获取环境域名。
  *
  * @param server MCP Server 实例
  * @param getConfig 获取当前配置（动态读取，支持热更新）
@@ -122,51 +123,25 @@ export function registerTools(
         // 局部 $ref 解引用：以完整文档为根，对 operation 内 schema 节点递归解析
         const derefedOp = derefOperation(op, doc as unknown as OpenApiDocumentLike);
 
-        const markdown = formatApiDetail(project.name, path, methodLower, derefedOp);
+        // YApi 源项目：拉取项目详情获取环境域名，在接口详情中展示
+        let envs;
+        if (isYapiProject(project)) {
+          try {
+            const detail = await fetchYapiProjectDetail(project);
+            envs = detail.env;
+          } catch (err) {
+            // 域名拉取失败不阻断接口详情展示，仅记录日志
+            logger.warn("接口详情拉取项目环境域名失败", { projectId, error: String(err) });
+          }
+        }
+
+        const markdown = formatApiDetail(project.name, path, methodLower, derefedOp, envs);
         return { content: [{ type: "text", text: markdown }] };
       } catch (err) {
         logger.error("get_api_details 失败", { projectId, path, method, error: String(err) });
         await invalidateProject(projectId);
         return errorMarkdown(
           `获取接口详情失败：${errMsg(err)}\n请稍后重试或检查项目配置。`,
-        );
-      }
-    },
-  );
-
-  // ────────────────────────────────────────────
-  // Tool 4: get_project_detail（项目详情）→ Markdown
-  // 仅 YApi 源项目支持：拉取 /api/project/get，展示环境域名等配置
-  // ────────────────────────────────────────────
-  server.registerTool(
-    "get_project_detail",
-    {
-      title: "项目详情",
-      description: "查询项目详情（环境配置、域名等）。仅对 YApi 源项目有效，返回各环境域名与公共 Header，用于确认接口的实际访问地址。",
-      inputSchema: {
-        projectId: z.string().describe("目标项目 ID"),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async ({ projectId }) => {
-      const config = getConfig();
-      const project = config.projects.find((p) => p.id === projectId);
-      if (!project) {
-        return errorMarkdown(`项目不存在: ${projectId}\n请使用 list_projects 查看可用项目。`);
-      }
-      if (!isYapiProject(project)) {
-        return errorMarkdown(
-          `项目 **${project.name}** 非 YApi 源（source=${project.source || "swagger"}），不支持查询项目详情。\n该工具仅对 YApi 源项目有效。`,
-        );
-      }
-      try {
-        const detail = await fetchYapiProjectDetail(project);
-        const markdown = formatProjectDetail(project.name, project.id, detail);
-        return { content: [{ type: "text", text: markdown }] };
-      } catch (err) {
-        logger.error("get_project_detail 失败", { projectId, error: String(err) });
-        return errorMarkdown(
-          `获取项目详情失败：${errMsg(err)}\n请检查 YApi 配置（baseUrl / token）是否正确。`,
         );
       }
     },

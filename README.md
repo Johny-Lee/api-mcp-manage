@@ -7,7 +7,7 @@
 ## ✨ 核心特性
 
 - **Streamable HTTP 传输**：采用 MCP 官方新标准（单端点 `POST /mcp`），同时保留 `GET /mcp` SSE 端点以兼容旧客户端
-- **四个只读工具**：`list_projects` / `get_api_list` / `get_api_details` / `get_project_detail`，严格只读边界
+- **三个只读工具**：`list_projects` / `get_api_list` / `get_api_details`，严格只读边界
 - **Swagger + YApi 双数据源**：支持标准 OpenAPI/Swagger（2.x/3.x）文档，也支持直接通过 YApi 开放 API 拉取接口数据
 - **懒加载二级缓存**：首次调用时才拉取上游文档，TTL 默认 2h + 自动 GC，避免启动卡顿与内存暴涨；支持 Memory（单机）和 Redis（跨进程共享）两种缓存后端
 - **局部 `$ref` 解引用**：仅展开目标接口节点的 schema，防循环引用，控制 token 成本
@@ -47,7 +47,6 @@ api-mcp-manage/
                   │ list_projects   │── config (热更新)
                   │ get_api_list    │── swagger/cache (懒加载)
                   │ get_api_details │── swagger/dereference (局部 $ref)
-                  │ get_project_detail│── swagger/yapi (YApi 原生拉取)
                   └────────┬────────┘
                            │
               ┌────────────┼────────────┐
@@ -141,8 +140,7 @@ Token 可在 Web 后台的「安全」面板查看与重置。
 |------|------|------|------|
 | `list_projects` | — | JSON | 所有 API 项目列表（id、名称、描述） |
 | `get_api_list` | `projectId`, `keyword?` | Markdown | 接口路由概要（首次触发懒加载，支持关键词过滤） |
-| `get_api_details` | `projectId`, `path`, `method` | Markdown | 接口详情（参数表 + 请求体/响应 schema，局部 `$ref` 解引用） |
-| `get_project_detail` | `projectId` | Markdown | 项目环境配置详情（仅 YApi 源项目，展示域名、Header 等） |
+| `get_api_details` | `projectId`, `path`, `method` | Markdown | 接口详情（参数表 + 请求体/响应 schema，局部 `$ref` 解引用；YApi 源项目额外展示环境域名） |
 
 > 所有工具均标记 `readOnlyHint: true`，严格只读，不执行或修改任何资源。
 
@@ -169,7 +167,7 @@ Token 可在 Web 后台的「安全」面板查看与重置。
 
 - 按菜单分组展示接口列表（`catname`）
 - 并发受限拉取详情（5 并发）
-- 环境配置查询（`get_project_detail` 返回域名、Header 等）
+- 接口详情展示各环境域名（`get_api_details` 拉 `/api/project/get` 获取域名，在详情中渲染）
 - 自动转换：req_query/req_headers/req_params → OpenAPI 参数；req_body_form/req_body_other → requestBody；res_body → 响应 schema
 
 ## 🖥️ Web 管理后台

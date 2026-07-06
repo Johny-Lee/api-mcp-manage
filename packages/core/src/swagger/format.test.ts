@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { formatApiList, filterApiList, formatApiDetail, formatNotFound } from "./format.js";
 import type { OpenApiDocument, OpenApiOperation } from "../types.js";
+import type { YapiEnv } from "./yapi.js";
 
 const sampleDoc: OpenApiDocument = {
   openapi: "3.0.0",
@@ -203,6 +204,28 @@ describe("formatApiDetail", () => {
     const md = formatApiDetail("Proj", "/p", "post", op);
     expect(md).toContain("| 参数名 | 类型 | 必填 | 描述 |");
     expect(md).toContain("| `token` | string |  | 令牌 |");
+  });
+
+  it("传入环境域名 → 渲染环境域名表", () => {
+    const envs: YapiEnv[] = [
+      { _id: "1", name: "正式环境", domain: "https://app.example.com", header: [{ name: "token", value: "" }] },
+      { _id: "2", name: "测试环境", domain: "http://test.example.com", header: [] },
+    ];
+    const md = formatApiDetail("Proj", "/p", "post", { summary: "t" }, envs);
+    expect(md).toContain("#### 环境域名");
+    expect(md).toContain("| 环境名 | 域名 | 公共 Header |");
+    expect(md).toContain("正式环境");
+    expect(md).toContain("`https://app.example.com`");
+    expect(md).toContain("token");
+    // 测试环境无 header → 显示 —
+    const testRow = md.split("\n").find((l) => l.includes("测试环境"));
+    expect(testRow).toBeDefined();
+    expect(testRow!).toContain("—");
+  });
+
+  it("不传环境域名 → 不渲染环境域名区块", () => {
+    const md = formatApiDetail("Proj", "/p", "post", { summary: "t" });
+    expect(md).not.toContain("环境域名");
   });
 });
 

@@ -1,3 +1,5 @@
+// @ts-ignore
+
 /**
  * YApi → OpenApi 转换器测试（纯函数 convertYapiToOpenApi）
  *
@@ -5,9 +7,8 @@
  * HTML desc 清理、HTTP 方法映射、非法 method 跳过。
  */
 import { describe, it, expect } from "vitest";
-import { convertYapiToOpenApi, formatProjectDetail, type YapiProjectDetail } from "./yapi.js";
+import { convertYapiToOpenApi } from "./yapi.js";
 
-// @ts-expect-error — 测试用最小 YApi 详情结构
 const baseDetail = {
   _id: 1,
   project_id: 10,
@@ -202,45 +203,5 @@ describe("convertYapiToOpenApi — summary 菜单名拼接", () => {
     ], "Demo");
     expect(doc.paths["/user/list"].get!.summary).toBe("列表「用户」");
     expect(doc.paths["/order/list"].get!.summary).toBe("列表「订单」");
-  });
-});
-
-describe("formatProjectDetail — 项目详情格式化", () => {
-  const detail: YapiProjectDetail = {
-    _id: 92,
-    name: "输入法",
-    basepath: "",
-    project_type: "public",
-    icon: "mobile",
-    env: [
-      { _id: "1", name: "正式环境", domain: "https://app.edujia.com", header: [{ name: "token", value: "" }] },
-      { _id: "2", name: "测试环境", domain: "http://123.57.228.223:8020", header: [] },
-    ],
-  };
-
-  it("生成项目名与环境配置表", () => {
-    const md = formatProjectDetail("输入法", "proj_1", detail);
-    expect(md).toContain("输入法 (ID: proj_1)");
-    expect(md).toContain("**项目名**: 输入法");
-    expect(md).toContain("#### 环境配置");
-    expect(md).toContain("| 环境名 | 域名 | 公共 Header |");
-    expect(md).toContain("正式环境");
-    expect(md).toContain("`https://app.edujia.com`");
-    expect(md).toContain("token");
-  });
-
-  it("无环境配置时显示提示", () => {
-    const md = formatProjectDetail("Demo", "proj_1", { _id: 1, name: "Demo" });
-    expect(md).toContain("未配置环境");
-  });
-
-  it("header 为空时显示 —", () => {
-    const md = formatProjectDetail("输入法", "proj_1", detail);
-    expect(md).toContain("测试环境");
-    expect(md).toContain("`http://123.57.228.223:8020`");
-    // 测试环境无 header → 显示 —
-    const testRow = md.split("\n").find((l) => l.includes("测试环境"));
-    expect(testRow).toBeDefined();
-    expect(testRow!).toContain("—");
   });
 });
