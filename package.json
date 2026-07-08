@@ -1,8 +1,7 @@
 {
   "name": "api-mcp-manager",
-  "version": "1.3.0",
   "private": true,
-  "description": "可视化 API 知识库 MCP 客户端 (V1.3 - Streamable HTTP)",
+  "description": "可视化 API 知识库 MCP 客户端 (V1.4 - Streamable HTTP)",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "engines": {

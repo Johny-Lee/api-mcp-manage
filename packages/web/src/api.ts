@@ -63,6 +63,8 @@ export interface SecurityInfo {
   mcpClientToken: string;
   port: number;
   mcpEndpoint: string;
+  /** 服务版本号（来自后端，用于 UI 角标展示） */
+  version?: string;
   /** 是否持久化 Web 后台访问 Token（重启后复用） */
   persistAdminToken?: boolean;
   cache?: CacheConfigInfo;

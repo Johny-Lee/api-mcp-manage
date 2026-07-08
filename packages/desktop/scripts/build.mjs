@@ -11,7 +11,7 @@
  * 打包前请确保已执行 pnpm --filter @api-mcp/web build。
  */
 import { build } from "esbuild";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,21 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function main() {
+  // 版本号同步：从 core/package.json 读取（全项目唯一真相源），
+  // 写入 desktop/package.json，供后续 electron-builder 作为安装包版本号。
+  // 这样升级版本时只需改 core 的 package.json，桌面安装包版本自动跟随。
+  const corePkgPath = join(__dirname, "..", "..", "..", "packages", "core", "package.json");
+  const desktopPkgPath = join(__dirname, "..", "package.json");
+  const corePkg = JSON.parse(await readFile(corePkgPath, "utf8"));
+  const desktopPkg = JSON.parse(await readFile(desktopPkgPath, "utf8"));
+  if (desktopPkg.version !== corePkg.version) {
+    desktopPkg.version = corePkg.version;
+    await writeFile(desktopPkgPath, JSON.stringify(desktopPkg, null, 2) + "\n", "utf8");
+    console.log(`✅ 已同步桌面端版本号 → ${corePkg.version}（来源: core/package.json）`);
+  } else {
+    console.log(`✅ 桌面端版本号已是最新: ${corePkg.version}`);
+  }
+
   // 前置检查：web 构建产物必须存在（否则打包出的应用无管理后台）
   const webDist = join(__dirname, "..", "..", "web", "dist", "index.html");
   if (!existsSync(webDist)) {

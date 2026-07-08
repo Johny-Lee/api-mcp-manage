@@ -10,6 +10,7 @@ import { registerTools } from "./tools/index.js";
 import { StaticKeyAuthProvider, createAdminAuth } from "./auth/index.js";
 import { startCacheGc, stopCacheGc, invalidateProject, getProjectDoc, getCacheKind, reinitCache, testRedis, clearCache } from "./swagger/cache.js";
 import { getCacheConfigSummary } from "./swagger/cache-store.js";
+import { VERSION, BANNER_VERSION } from "./version.js";
 import { filterApiList, formatApiDetail, formatNotFound } from "./swagger/format.js";
 import { parseImportedDoc } from "./swagger/import.js";
 import { derefOperation } from "./tools/index.js";
@@ -42,7 +43,7 @@ let startOptions: StartServerOptions = {};
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "api-mcp-manager",
-    version: "1.3.0",
+    version: VERSION,
   });
   // 注册工具（动态读取配置，支持热更新）
   registerTools(server, () => config);
@@ -446,6 +447,7 @@ export async function startServer(
       mcpClientToken: config.settings.mcp_client_token,
       port: currentPort,
       mcpEndpoint: `/mcp`,
+      version: VERSION,
       persistAdminToken: !!config.settings.persist_admin_token,
       cache: {
         type: config.settings.cache_type || "memory",
@@ -549,7 +551,7 @@ export async function startServer(
   // 启动横幅信息
   app.get("/admin/api/info", adminAuth, (_req, res) => {
     res.json({
-      version: "1.3.0",
+      version: VERSION,
       port: currentPort,
       projectCount: config.projects.length,
     });
@@ -580,7 +582,7 @@ export async function startServer(
     // 控制台启动横幅
     const banner = [
       "",
-      "🚀 API MCP Manager Server (V1.3) 已启动！",
+      `🚀 API MCP Manager Server (${BANNER_VERSION}) 已启动！`,
       "─────────────────────────────────────────────────────",
       `📡 MCP Endpoint (Streamable HTTP):  http://localhost:${currentPort}/mcp`,
       `🛠️  Web Dashboard:                   http://localhost:${currentPort}/admin?token=${adminSessionToken}`,

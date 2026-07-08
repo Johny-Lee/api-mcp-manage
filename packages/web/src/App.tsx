@@ -54,7 +54,9 @@ export default function App() {
           <div className="flex items-center gap-3">
             <img src="/api-logo.png" alt="API MCP Manager" className="w-8 h-8 rounded-md" />
             <h1 className="text-xl font-bold text-gray-800">API MCP Manager</h1>
-            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono">V1.3</span>
+            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono">
+              {security?.version ? `V${security.version.split(".").slice(0, 2).join(".")}` : "V1.4"}
+            </span>
           </div>
           <div className="flex items-center gap-3">
             {/* 连接状态 */}

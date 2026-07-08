@@ -5,7 +5,7 @@ import { logger } from "../utils/logger.js";
 /**
  * 鉴权提供者接口 — 支持后续扩展 OAuth 2.1
  *
- * V1.3 实现 StaticKeyAuthProvider（静态 API Key）
+ * 实现 StaticKeyAuthProvider（静态 API Key）
  * 预留 OAuth21AuthProvider 空骨架供公网多租户场景接入
  */
 
