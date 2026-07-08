@@ -46,7 +46,7 @@ interface YapiInterfaceListItem {
   up_time?: number;
 }
 
-interface YapiInterfaceDetail extends YapiInterfaceListItem {
+export interface YapiInterfaceDetail extends YapiInterfaceListItem {
   desc?: string;
   markdown?: string;
   req_query?: YapiParam[];

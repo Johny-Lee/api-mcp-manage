@@ -12,6 +12,7 @@ import {
 } from "../swagger/format.js";
 import { logger } from "../utils/logger.js";
 import { fetchYapiProjectDetail, isYapiProject } from "../swagger/yapi.js";
+import { extractApifoxEnvs, isApifoxProject } from "../swagger/apifox.js";
 
 /**
  * 注册三个只读 MCP 工具
@@ -123,9 +124,12 @@ export function registerTools(
         // 局部 $ref 解引用：以完整文档为根，对 operation 内 schema 节点递归解析
         const derefedOp = derefOperation(op, doc as unknown as OpenApiDocumentLike);
 
-        // YApi 源项目：拉取项目详情获取环境域名，在接口详情中展示
+        // 环境域名展示：
+        // - YApi 源（非导入模式）：拉取项目详情获取环境域名
+        // - Apifox 源（非导入模式）：从已拉取文档的 servers 字段提取
+        // 导入 JSON 模式无上游/无 servers，跳过
         let envs;
-        if (isYapiProject(project)) {
+        if (isYapiProject(project) && !project.importMode) {
           try {
             const detail = await fetchYapiProjectDetail(project);
             envs = detail.env;
@@ -133,6 +137,8 @@ export function registerTools(
             // 域名拉取失败不阻断接口详情展示，仅记录日志
             logger.warn("接口详情拉取项目环境域名失败", { projectId, error: String(err) });
           }
+        } else if (isApifoxProject(project) && !project.importMode) {
+          envs = extractApifoxEnvs(doc);
         }
 
         const markdown = formatApiDetail(project.name, path, methodLower, derefedOp, envs);

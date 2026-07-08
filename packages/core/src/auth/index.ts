@@ -107,8 +107,11 @@ export class OAuth21AuthProvider implements AuthProvider {
  * 启动时生成一次性 session token，通过 URL query 下发给管理后台。
  * 前端首屏读取后存 sessionStorage，后续请求带 X-Admin-Token header。
  * 仅允许 localhost/回环地址走 query 下发。
+ *
+ * 采用 getter 注入（而非按值捕获），保证运行期 token 变更（如切换持久化）
+ * 能即时生效，无需重建中间件。
  */
-export function createAdminAuth(adminSessionToken: string) {
+export function createAdminAuth(getAdminSessionToken: () => string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Admin 相关路径才需要鉴权
     if (!req.path.startsWith("/admin/api/")) {
@@ -125,7 +128,7 @@ export function createAdminAuth(adminSessionToken: string) {
       return;
     }
 
-    if (!token || token !== adminSessionToken) {
+    if (!token || token !== getAdminSessionToken()) {
       res.status(401).json({ error: "Unauthorized: Invalid admin session token" });
       return;
     }

@@ -126,3 +126,134 @@ describe("normalizeDocument — OpenAPI 3.x 原样透传", () => {
     expect(out.paths).not.toBe(doc.paths);
   });
 });
+
+// ──────────────────────────────────────────────
+// OpenAPI 3.1 → 3.0 降级
+// ──────────────────────────────────────────────
+
+/** 构造一个最小 OpenAPI 3.1 文档（type 数组 + 数字 exclusiveMin/Max + components/schemas） */
+function openapi31Doc(): OpenApiDocument {
+  return {
+    openapi: "3.1.0",
+    info: { title: "Demo31", version: "1.0" },
+    paths: {
+      "/item": {
+        post: {
+          summary: "create",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    // 可空：type 数组含 null
+                    name: { type: ["string", "null"], description: "可空名称" },
+                    // 纯联合（多个非 null 类型）
+                    mix: { type: ["string", "integer"] },
+                    // 嵌套对象内含可空字段
+                    data: {
+                      type: "object",
+                      properties: {
+                        token: { type: ["string", "null"] },
+                      },
+                    },
+                    // 数组元素可空
+                    tags: { type: "array", items: { type: ["string", "null"] } },
+                    // 数字形态 exclusiveMinimum/Maximum
+                    age: { type: "integer", exclusiveMinimum: 0, exclusiveMaximum: 120 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "ok",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Result" } } },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        Result: {
+          type: "object",
+          properties: {
+            code: { type: ["integer", "null"] },
+          },
+        },
+      },
+    },
+  } as OpenApiDocument;
+}
+
+describe("normalizeDocument — OpenAPI 3.1 降级", () => {
+  it("type 数组含 null → 标量 type + nullable:true", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const schema = out.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, Record<string, unknown>>;
+    expect(props.name.type).toBe("string");
+    expect(props.name.nullable).toBe(true);
+    expect(Array.isArray(props.name.type)).toBe(false);
+  });
+
+  it("纯联合类型数组 → 取首个非 null 类型，其余记入 description", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const schema = out.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, Record<string, unknown>>;
+    expect(props.mix.type).toBe("string");
+    expect(props.mix.description).toContain("string | integer");
+  });
+
+  it("嵌套对象内的 type 数组也被递归转换", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const schema = out.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>;
+    const dataProps = (schema.properties as Record<string, Record<string, unknown>>).data.properties as Record<string, Record<string, unknown>>;
+    expect(dataProps.token.type).toBe("string");
+    expect(dataProps.token.nullable).toBe(true);
+  });
+
+  it("数组元素 type 数组也被递归转换", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const schema = out.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>;
+    const items = (schema.properties as Record<string, Record<string, unknown>>).tags.items as Record<string, unknown>;
+    expect(items.type).toBe("string");
+    expect(items.nullable).toBe(true);
+  });
+
+  it("数字 exclusiveMinimum/Maximum → minimum/maximum + 布尔 exclusive*", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const schema = out.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>;
+    const age = (schema.properties as Record<string, Record<string, unknown>>).age;
+    expect(age.minimum).toBe(0);
+    expect(age.exclusiveMinimum).toBe(true);
+    expect(age.maximum).toBe(120);
+    expect(age.exclusiveMaximum).toBe(true);
+  });
+
+  it("components/schemas 内的 type 数组被转换", () => {
+    const out = normalizeDocument(openapi31Doc());
+    const resultSchema = (out as unknown as { components: { schemas: { Result: Record<string, unknown> } } })
+      .components.schemas.Result;
+    const codeProps = resultSchema.properties as Record<string, Record<string, unknown>>;
+    expect(codeProps.code.type).toBe("integer");
+    expect(codeProps.code.nullable).toBe(true);
+  });
+
+  it("顶层 openapi 版本号降级为 3.0.3", () => {
+    const out = normalizeDocument(openapi31Doc());
+    expect(out.openapi).toBe("3.0.3");
+  });
+
+  it("降级不修改原始文档（深拷贝）", () => {
+    const doc = openapi31Doc();
+    const schemaRef = (doc.paths["/item"].post.requestBody!.content!["application/json"].schema as Record<string, unknown>)
+      .properties as Record<string, Record<string, unknown>>;
+    const originalType = schemaRef.name.type;
+    normalizeDocument(doc);
+    // 原文档 type 仍为数组
+    expect(schemaRef.name.type).toEqual(originalType);
+    expect(Array.isArray(schemaRef.name.type)).toBe(true);
+  });
+});

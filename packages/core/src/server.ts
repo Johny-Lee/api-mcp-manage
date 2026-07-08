@@ -11,13 +11,15 @@ import { StaticKeyAuthProvider, createAdminAuth } from "./auth/index.js";
 import { startCacheGc, stopCacheGc, invalidateProject, getProjectDoc, getCacheKind, reinitCache, testRedis, clearCache } from "./swagger/cache.js";
 import { getCacheConfigSummary } from "./swagger/cache-store.js";
 import { filterApiList, formatApiDetail, formatNotFound } from "./swagger/format.js";
+import { parseImportedDoc } from "./swagger/import.js";
 import { derefOperation } from "./tools/index.js";
 import { fetchYapiProjectDetail, isYapiProject } from "./swagger/yapi.js";
+import { extractApifoxEnvs, isApifoxProject } from "./swagger/apifox.js";
 import type { OpenApiDocumentLike } from "./swagger/types-helpers.js";
 import type { OpenApiOperation } from "./types.js";
 import { logger } from "./utils/logger.js";
 import type { McpProjectsConfig } from "./types.js";
-import { loadConfig, addProject, updateProject, removeProject, resetMcpToken, generateAdminSessionToken, updateCacheSettings, type CacheSettingsPatch } from "./config/index.js";
+import { loadConfig, saveConfig, addProject, updateProject, removeProject, resetMcpToken, generateAdminSessionToken, updateCacheSettings, setImportedDoc, updateAdminTokenPersistence, type CacheSettingsPatch } from "./config/index.js";
 
 // ──────────────────────────────────────────────
 // 全局状态
@@ -79,13 +81,28 @@ export async function startServer(
   options: StartServerOptions = {},
 ): Promise<{ port: number; adminSessionToken: string; mcpClientToken: string }> {
   startOptions = options;
-  // 重启时复用已有 adminSessionToken，避免踢掉已登录用户
-  if (!adminSessionToken) {
-    adminSessionToken = generateAdminSessionToken();
-  }
 
   // 加载配置
   config = await loadConfig(options.configPath);
+
+  // Web 后台访问 Token：
+  // - 进程内重启（restartServer）复用已存在的 adminSessionToken，避免踢掉已登录用户
+  // - 持久化模式（persist_admin_token=true）：从配置读取持久 token，缺失则生成并保存
+  // - 默认（非持久化）：每次进程启动重新生成
+  if (adminSessionToken) {
+    // 进程内重启：复用（无需持久化校验，token 已在内存中）
+  } else if (config.settings.persist_admin_token) {
+    if (config.settings.admin_session_token) {
+      adminSessionToken = config.settings.admin_session_token;
+    } else {
+      // 首次开启持久化但尚未生成 token：生成并持久化
+      adminSessionToken = generateAdminSessionToken();
+      config.settings.admin_session_token = adminSessionToken;
+      await saveConfig(config, options.configPath);
+    }
+  } else {
+    adminSessionToken = generateAdminSessionToken();
+  }
 
   // 根据配置初始化缓存（内存/Redis + TTL）
   await reinitCache(config.settings);
@@ -172,7 +189,7 @@ export async function startServer(
   // ──────────────────────────────────────────
   // Admin API 端点
   // ──────────────────────────────────────────
-  const adminAuth = createAdminAuth(adminSessionToken);
+  const adminAuth = createAdminAuth(() => adminSessionToken);
 
   // 获取所有项目
   app.get("/admin/api/projects", adminAuth, (_req, res) => {
@@ -185,6 +202,8 @@ export async function startServer(
       baseUrl: p.baseUrl,
       projectId: p.projectId,
       hasToken: !!p.token,
+      importMode: !!p.importMode,
+      hasImportedDoc: !!p.importedDoc,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
     }));
@@ -194,14 +213,14 @@ export async function startServer(
   // 添加项目
   app.post("/admin/api/projects", adminAuth, async (req, res) => {
     try {
-      const { name, desc, source, url, baseUrl, projectId, token } = req.body;
+      const { name, desc, source, url, baseUrl, projectId, token, importMode } = req.body;
       if (!name) {
         res.status(400).json({ error: "name 为必填字段" });
         return;
       }
       const result = await addProject(
         config,
-        { name, desc: desc || "", source, url, baseUrl, projectId, token },
+        { name, desc: desc || "", source, url, baseUrl, projectId, token, importMode: !!importMode },
         options.configPath,
       );
       config = result.config;
@@ -216,8 +235,8 @@ export async function startServer(
   app.patch("/admin/api/projects/:id", adminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, desc, source, url, baseUrl, projectId, token } = req.body;
-      const patch: Record<string, string | undefined> = {};
+      const { name, desc, source, url, baseUrl, projectId, token, importMode } = req.body;
+      const patch: Record<string, unknown> = {};
       if (name !== undefined) patch.name = name;
       if (desc !== undefined) patch.desc = desc;
       if (source !== undefined) patch.source = source;
@@ -225,6 +244,7 @@ export async function startServer(
       if (baseUrl !== undefined) patch.baseUrl = baseUrl;
       if (projectId !== undefined) patch.projectId = projectId;
       if (token !== undefined) patch.token = token;
+      if (importMode !== undefined) patch.importMode = !!importMode;
       if (Object.keys(patch).length === 0) {
         res.status(400).json({ error: "无更新字段" });
         return;
@@ -280,6 +300,11 @@ export async function startServer(
         res.status(404).json({ error: "项目不存在" });
         return;
       }
+      // 导入 JSON 模式无上游，不支持刷新缓存
+      if (project.importMode) {
+        res.json({ ok: false, error: "导入 JSON 项目无需刷新缓存，请使用「导入 JSON」重新导入" });
+        return;
+      }
       // 先失效缓存，再立即拉取最新文档
       await invalidateProject(project.id);
       const doc = await getProjectDoc(project);
@@ -291,6 +316,42 @@ export async function startServer(
       });
     } catch (err) {
       logger.error("刷新缓存失败", { projectId: req.params.id, error: String(err) });
+      res.json({ ok: false, error: errMsg(err) });
+    }
+  });
+
+  // 导入 JSON 文档（仅导入模式项目可用）
+  app.post("/admin/api/projects/:id/import", adminAuth, async (req, res) => {
+    try {
+      const project = config.projects.find((p: McpProjectsConfig["projects"][number]) => p.id === req.params.id);
+      if (!project) {
+        res.status(404).json({ error: "项目不存在" });
+        return;
+      }
+      if (!project.importMode) {
+        res.status(400).json({ error: "该项目非导入 JSON 模式，请先在编辑中切换为导入 JSON" });
+        return;
+      }
+      const json = typeof req.body?.json === "string" ? req.body.json : "";
+      if (!json.trim()) {
+        res.status(400).json({ error: "json 内容为空" });
+        return;
+      }
+      // 按 source 类型校验并转换为 OpenApiDocument
+      const source = project.source || "swagger";
+      const doc = parseImportedDoc(source, json, project.name);
+      // 持久化导入文档
+      config = await setImportedDoc(config, project.id, doc, options.configPath);
+      // 失效缓存，使下次访问读取新的 importedDoc
+      await invalidateProject(project.id);
+      res.json({
+        ok: true,
+        title: doc.info.title,
+        pathCount: Object.keys(doc.paths).length,
+        version: doc.info.version,
+      });
+    } catch (err) {
+      logger.error("导入 JSON 失败", { projectId: req.params.id, error: String(err) });
       res.json({ ok: false, error: errMsg(err) });
     }
   });
@@ -356,14 +417,18 @@ export async function startServer(
       const derefedOp = derefOperation(op, doc as unknown as OpenApiDocumentLike);
 
       // YApi 源项目：拉取项目详情获取环境域名，在接口详情中展示
+      // Apifox 源：从已拉取文档的 servers 字段提取环境域名
+      // 导入 JSON 模式无 baseUrl/token，跳过
       let envs;
-      if (isYapiProject(project)) {
+      if (isYapiProject(project) && !project.importMode) {
         try {
           const detail = await fetchYapiProjectDetail(project);
           envs = detail.env;
         } catch (err) {
           logger.warn("接口详情拉取项目环境域名失败", { projectId: project.id, error: String(err) });
         }
+      } else if (isApifoxProject(project) && !project.importMode) {
+        envs = extractApifoxEnvs(doc);
       }
 
       const markdown = formatApiDetail(project.name, path, method, derefedOp, envs);
@@ -381,6 +446,7 @@ export async function startServer(
       mcpClientToken: config.settings.mcp_client_token,
       port: currentPort,
       mcpEndpoint: `/mcp`,
+      persistAdminToken: !!config.settings.persist_admin_token,
       cache: {
         type: config.settings.cache_type || "memory",
         ttlMs: config.settings.cache_ttl_ms,
@@ -400,6 +466,25 @@ export async function startServer(
     const result = await resetMcpToken(config, options.configPath);
     config = result.config;
     res.json({ newToken: result.newToken });
+  });
+
+  // 切换 Web 后台访问 Token 持久化设置
+  // 开启时优先沿用当前内存 token 并持久化（保证当前会话重启后仍有效），
+  // 关闭时清除持久 token。切换后当前进程同步更新内存 token。
+  app.put("/admin/api/security/persist-admin-token", adminAuth, async (req, res) => {
+    try {
+      const persist = !!req.body?.persist;
+      const result = await updateAdminTokenPersistence(config, persist, options.configPath, adminSessionToken);
+      config = result.config;
+      // 同步内存 token：开启时沿用持久化 token，关闭时保持当前 token 不变（下次启动才换新）
+      if (persist && result.adminSessionToken) {
+        adminSessionToken = result.adminSessionToken;
+      }
+      res.json({ ok: true, persistAdminToken: persist });
+    } catch (err) {
+      logger.error("切换 Token 持久化失败", { error: String(err) });
+      res.status(400).json({ error: errMsg(err) });
+    }
   });
 
   // 测试缓存连接（仅 Redis 需要测试，不保存配置）

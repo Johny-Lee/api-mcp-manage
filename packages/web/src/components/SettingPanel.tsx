@@ -4,9 +4,12 @@ import { api, type SecurityInfo, type CacheSettingsInput } from "../api";
 export default function SettingPanel({
   info,
   onReset,
+  onPersistAdminTokenChanged,
 }: {
   info: SecurityInfo | null;
   onReset: () => Promise<void>;
+  /** Web Token 持久化设置变更后回调（供父组件刷新 security 信息） */
+  onPersistAdminTokenChanged?: (persist: boolean) => void;
 }) {
   const [resetting, setResetting] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -72,8 +75,92 @@ export default function SettingPanel({
         </p>
       </div>
 
+      {/* Web 后台访问 Token 持久化 */}
+      <AdminTokenCard
+        persist={!!info.persistAdminToken}
+        onChanged={onPersistAdminTokenChanged}
+      />
+
       {/* 缓存配置 */}
       <CacheSettingsCard info={info} />
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════
+// Web 后台访问 Token 持久化卡片
+// ════════════════════════════════════════════════
+
+function AdminTokenCard({
+  persist,
+  onChanged,
+}: {
+  persist: boolean;
+  onChanged?: (persist: boolean) => void;
+}) {
+  const [checked, setChecked] = useState(persist);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const handleToggle = async (next: boolean) => {
+    setMsg(null);
+    setSaving(true);
+    try {
+      await api.setPersistAdminToken(next);
+      setChecked(next);
+      onChanged?.(next);
+      setMsg({
+        type: "success",
+        text: next
+          ? "已开启持久化：Web 后台地址在服务重启后保持不变"
+          : "已关闭持久化：每次重启将重新生成 Web 后台访问 Token",
+      });
+    } catch (err) {
+      setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMsg(null), 4000);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-5">
+      <div className="flex items-center justify-between">
+        <div className="min-w-0">
+          <h3 className="font-medium text-gray-700">Web 后台访问 Token 持久化</h3>
+          <p className="mt-1 text-xs text-gray-400">
+            开启后，Web 后台访问地址中的 Token 会保存到配置文件，服务重启后保持不变；
+            关闭则每次重启重新生成（默认）。
+          </p>
+        </div>
+        {/* Toggle 开关 */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          disabled={saving}
+          onClick={() => handleToggle(!checked)}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+            checked ? "bg-emerald-500" : "bg-gray-300"
+          }`}
+          title={checked ? "已开启，点击关闭" : "已关闭，点击开启"}
+        >
+          <span
+            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+              checked ? "translate-x-5" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+      {msg && (
+        <div
+          className={`mt-3 p-2 rounded text-xs ${
+            msg.type === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"
+          }`}
+        >
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }

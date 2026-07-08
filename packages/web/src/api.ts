@@ -28,7 +28,7 @@ function getToken(): string {
   return sessionStorage.getItem(TOKEN_KEY) || "";
 }
 
-export type ApiSource = "swagger" | "yapi";
+export type ApiSource = "swagger" | "yapi" | "apifox" | "postman";
 
 export interface ProjectItem {
   id: string;
@@ -39,6 +39,10 @@ export interface ProjectItem {
   baseUrl?: string;
   projectId?: string;
   hasToken: boolean;
+  /** 是否导入 JSON 模式 */
+  importMode?: boolean;
+  /** 是否已导入文档 */
+  hasImportedDoc?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -52,12 +56,15 @@ export interface ProjectInput {
   baseUrl?: string;
   projectId?: string;
   token?: string;
+  importMode?: boolean;
 }
 
 export interface SecurityInfo {
   mcpClientToken: string;
   port: number;
   mcpEndpoint: string;
+  /** 是否持久化 Web 后台访问 Token（重启后复用） */
+  persistAdminToken?: boolean;
   cache?: CacheConfigInfo;
 }
 
@@ -153,6 +160,12 @@ export const api = {
   refreshProject: (id: string) =>
     request<TestResult>(`/admin/api/projects/${id}/refresh`, { method: "POST" }),
 
+  importProjectDoc: (id: string, json: string) =>
+    request<TestResult>(`/admin/api/projects/${id}/import`, {
+      method: "POST",
+      body: JSON.stringify({ json }),
+    }),
+
   getProjectApis: (id: string, keyword?: string) =>
     request<ProjectApis>(`/admin/api/projects/${id}/apis${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ""}`),
 
@@ -165,6 +178,12 @@ export const api = {
 
   resetToken: () =>
     request<{ newToken: string }>("/admin/api/security/reset-token", { method: "POST" }),
+
+  setPersistAdminToken: (persist: boolean) =>
+    request<{ ok: boolean; persistAdminToken: boolean }>(
+      "/admin/api/security/persist-admin-token",
+      { method: "PUT", body: JSON.stringify({ persist }) },
+    ),
 
   testCacheSettings: (data: CacheSettingsInput) =>
     request<{ ok: boolean; error?: string }>("/admin/api/cache-settings/test", {

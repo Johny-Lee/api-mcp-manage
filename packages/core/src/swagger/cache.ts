@@ -2,6 +2,8 @@ import type { McpProject, McpSettings, OpenApiDocument } from "../types.js";
 import { fetchJson } from "../utils/http.js";
 import { normalizeDocument } from "./normalize.js";
 import { fetchYapiDocument, isYapiProject } from "./yapi.js";
+import { fetchApifoxDocument, isApifoxProject } from "./apifox.js";
+import { isPostmanProject } from "./postman.js";
 import { logger } from "../utils/logger.js";
 import {
   createCacheStore,
@@ -118,7 +120,7 @@ export async function getCached(projectId: string): Promise<OpenApiDocument | un
 }
 
 /** 基本校验 OpenAPI/Swagger 文档结构 */
-function validateOpenApi(doc: unknown): OpenApiDocument {
+export function validateOpenApi(doc: unknown): OpenApiDocument {
   if (!doc || typeof doc !== "object") {
     throw new Error("上游返回非 JSON 对象");
   }
@@ -135,13 +137,32 @@ function validateOpenApi(doc: unknown): OpenApiDocument {
 
 /** 拉取并解析文档（Swagger 源归一化；YApi 源走原生接口拉取后转换） */
 async function fetchAndParse(project: McpProject): Promise<OpenApiDocument> {
-  const source = isYapiProject(project) ? "yapi" : "swagger";
+  // 导入 JSON 模式：不访问上游，直接返回持久化的 importedDoc
+  if (project.importMode) {
+    if (!project.importedDoc) {
+      throw new Error(`项目 ${project.id} 尚未导入数据，请先在接口列表点击「导入 JSON」`);
+    }
+    return project.importedDoc;
+  }
+
+  // postman 源仅支持导入模式（已在上文提前返回）；兜底拦截
+  if (isPostmanProject(project)) {
+    throw new Error(`项目 ${project.id} 为 Postman 源，仅支持导入 JSON，不支持自动拉取`);
+  }
+
+  // 按 source 决定拉取方式（apifox 自动拉取返回标准 OpenAPI，复用 swagger 同一管线）
+  const source = isApifoxProject(project) ? "apifox" : isYapiProject(project) ? "yapi" : "swagger";
   logger.info("拉取文档", { projectId: project.id, source });
 
   let doc: OpenApiDocument;
   if (source === "yapi") {
     // YApi 源：通过原生开放 API 拉取接口列表 + 详情，转换为 OpenApiDocument
     doc = await fetchYapiDocument(project);
+  } else if (source === "apifox") {
+    // Apifox 源：通过开放 API 的 export-openapi 端点拉取标准 OpenAPI 文档
+    const raw = await fetchApifoxDocument(project);
+    const validated = validateOpenApi(raw);
+    doc = normalizeDocument(validated);
   } else {
     // Swagger 源：直接拉取文档
     if (!project.url) throw new Error(`项目 ${project.id} 未配置 url`);

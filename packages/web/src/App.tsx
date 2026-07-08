@@ -25,11 +25,16 @@ export default function App() {
     setSecurity((prev) => (prev ? { ...prev, mcpClientToken: newToken } : null));
   };
 
+  const handlePersistAdminTokenChanged = (persist: boolean) => {
+    setSecurity((prev) => (prev ? { ...prev, persistAdminToken: persist } : null));
+  };
+
   if (!authed) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-100">
         <div className="bg-white p-8 rounded-lg shadow-lg text-center max-w-md">
-          <h1 className="text-2xl font-bold mb-4">🔌 API MCP Manager</h1>
+          <img src="/api-logo.png" alt="API MCP Manager" className="w-16 h-16 mx-auto mb-4 rounded-lg" />
+          <h1 className="text-2xl font-bold mb-4">API MCP Manager</h1>
           <p className="text-red-600 mb-4">
             ⚠️ 未检测到有效的 Admin Session Token
           </p>
@@ -47,7 +52,7 @@ export default function App() {
       <header className="bg-white border-b border-gray-200 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">🔌</span>
+            <img src="/api-logo.png" alt="API MCP Manager" className="w-8 h-8 rounded-md" />
             <h1 className="text-xl font-bold text-gray-800">API MCP Manager</h1>
             <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono">V1.3</span>
           </div>
@@ -80,7 +85,7 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {tab === "projects" ? <ProjectList /> : <SettingPanel info={security} onReset={handleResetToken} />}
+        {tab === "projects" ? <ProjectList /> : <SettingPanel info={security} onReset={handleResetToken} onPersistAdminTokenChanged={handlePersistAdminTokenChanged} />}
       </main>
 
       {/* MCP 接入方式弹层 */}

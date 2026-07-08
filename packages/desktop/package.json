@@ -30,6 +30,7 @@
     "files": [
       "dist/**/*",
       "node_modules/**/*",
+      "assets/icons/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -41,10 +42,17 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg"]
+      "target": ["dmg"],
+      "icon": "assets/icon.png"
     },
     "win": {
-      "target": ["nsis"]
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
     }
   }
 }

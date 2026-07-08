@@ -21,31 +21,55 @@ const HTTP_METHODS = ["get", "post", "put", "delete", "patch", "options", "head"
 
 /**
  * 归一化整篇文档（深拷贝后转换）。
+ *
+ * 三种分支：
+ * - Swagger 2.x → OpenAPI 3.x 结构转换（body/formData/response.schema 等）
+ * - OpenAPI 3.1 → 3.0 降级（type 数组、exclusiveMinimum 数字等 → 3.0 形态）
+ * - OpenAPI 3.0 → 原样深拷贝
+ *
  * @returns 新文档对象，不修改入参
  */
 export function normalizeDocument(doc: OpenApiDocument): OpenApiDocument {
-  // 仅 Swagger 2.x 需要归一化；OpenAPI 3.x 直接返回深拷贝
-  const isSwagger2 = !!doc.swagger && !doc.openapi;
-  if (!isSwagger2) {
-    return cloneDoc(doc);
-  }
+  // Swagger 2.x → OpenAPI 3.x 结构转换
+  if (isSwagger2(doc)) {
+    const out = cloneDoc(doc);
+    const consumes = (out as unknown as { consumes?: string[] }).consumes || ["application/json"];
+    const produces = (out as unknown as { produces?: string[] }).produces || ["application/json"];
 
-  const out = cloneDoc(doc);
-  const consumes = (out as unknown as { consumes?: string[] }).consumes || ["application/json"];
-  const produces = (out as unknown as { produces?: string[] }).produces || ["application/json"];
-
-  for (const methods of Object.values(out.paths)) {
-    for (const method of HTTP_METHODS) {
-      const op = methods[method] as OpenApiOperation | undefined;
-      if (!op) continue;
-      methods[method] = normalizeOperation(op, consumes, produces);
+    for (const methods of Object.values(out.paths)) {
+      for (const method of HTTP_METHODS) {
+        const op = methods[method] as OpenApiOperation | undefined;
+        if (!op) continue;
+        methods[method] = normalizeOperation(op, consumes, produces);
+      }
     }
+    logger.debug("Swagger 2.0 文档已归一化为 OpenAPI 3.x 结构", {
+      pathCount: Object.keys(out.paths).length,
+    });
+    return out;
   }
 
-  logger.debug("Swagger 2.0 文档已归一化为 OpenAPI 3.x 结构", {
-    pathCount: Object.keys(out.paths).length,
-  });
-  return out;
+  // OpenAPI 3.1 → 3.0 降级（使下游统一面对 3.0 形态）
+  if (isOpenApi31(doc)) {
+    const out = downgrade31to30(doc);
+    logger.debug("OpenAPI 3.1 文档已降级为 3.0 形态", {
+      pathCount: Object.keys(out.paths).length,
+    });
+    return out;
+  }
+
+  // OpenAPI 3.0 → 原样深拷贝
+  return cloneDoc(doc);
+}
+
+/** 是否 Swagger 2.x */
+function isSwagger2(doc: OpenApiDocument): boolean {
+  return !!doc.swagger && !doc.openapi;
+}
+
+/** 是否 OpenAPI 3.1（openapi 字段以 "3.1" 开头） */
+function isOpenApi31(doc: OpenApiDocument): boolean {
+  return typeof doc.openapi === "string" && doc.openapi.startsWith("3.1");
 }
 
 /** 归一化单个 operation */
@@ -165,4 +189,164 @@ function normalizeResponse(
 /** 深拷贝文档（缓存共享，必须不可变） */
 function cloneDoc(doc: OpenApiDocument): OpenApiDocument {
   return JSON.parse(JSON.stringify(doc)) as OpenApiDocument;
+}
+
+// ──────────────────────────────────────────────
+// OpenAPI 3.1 → 3.0 降级
+// ──────────────────────────────────────────────
+
+/** OpenAPI 3.1 中 schema 组合关键字（值为 schema 数组，需逐项递归） */
+const SCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+
+/**
+ * 把 OpenAPI 3.1 文档降级为 3.0 形态（深拷贝后就地改写）。
+ *
+ * 主要处理：
+ * - schema.type 为数组（如 ["string","null"]）→ 标量 type + nullable
+ * - exclusiveMinimum/exclusiveMaximum 为数字 → minimum/maximum + 布尔 exclusive*
+ * - 顶层 openapi 版本号 "3.1.x" → "3.0.3"
+ *
+ * 递归遍历 paths 下所有 schema（parameters.schema / requestBody.content / responses.content）
+ * 与 components/schemas，以及 schema 内部嵌套（properties/items/allOf 等）。
+ */
+function downgrade31to30(doc: OpenApiDocument): OpenApiDocument {
+  const out = cloneDoc(doc);
+
+  // 递归遍历 paths 下每个 operation 的 schema 节点
+  for (const methods of Object.values(out.paths)) {
+    for (const method of Object.values(methods)) {
+      const op = method as OpenApiOperation | undefined;
+      if (!op) continue;
+      // 参数 schema
+      if (op.parameters) {
+        for (const p of op.parameters) {
+          if (p.schema) walkSchema(p.schema as Record<string, unknown>);
+        }
+      }
+      // requestBody schema
+      if (op.requestBody?.content) {
+        for (const media of Object.values(op.requestBody.content)) {
+          if (media.schema) walkSchema(media.schema as Record<string, unknown>);
+        }
+      }
+      // responses schema
+      if (op.responses) {
+        for (const resp of Object.values(op.responses)) {
+          if (resp.content) {
+            for (const media of Object.values(resp.content)) {
+              if (media.schema) walkSchema(media.schema as Record<string, unknown>);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // components/schemas（3.1 复用定义的集中地）
+  const components = (out as unknown as { components?: { schemas?: Record<string, unknown> } }).components;
+  if (components?.schemas) {
+    for (const schema of Object.values(components.schemas)) {
+      if (schema && typeof schema === "object") walkSchema(schema as Record<string, unknown>);
+    }
+  }
+
+  // 顶层版本号
+  out.openapi = "3.0.3";
+  return out;
+}
+
+/**
+ * 深度优先遍历一个 schema 节点，就地降级 3.1 特性为 3.0 形态。
+ *
+ * 会递归进入 schema 的子节点（properties 值、items、allOf/anyOf/oneOf 成员等）。
+ */
+function walkSchema(schema: Record<string, unknown>): void {
+  if (!schema || typeof schema !== "object") return;
+
+  // 先转换当前节点，再递归子节点（避免子节点转换后又被重复处理）
+  convertTypeArray(schema);
+  convertExclusiveBounds(schema);
+
+  // 递归 schema 承载的子节点
+  // properties / additionalProperties：值是「字段名 → schema」的 map
+  for (const key of ["properties", "additionalProperties"]) {
+    const child = schema[key];
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      for (const v of Object.values(child as Record<string, unknown>)) {
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          walkSchema(v as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  // items / not：值是单个 schema 对象
+  for (const key of ["items", "not"]) {
+    const child = schema[key];
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      walkSchema(child as Record<string, unknown>);
+    }
+  }
+  for (const key of SCHEMA_LIST_KEYS) {
+    const list = schema[key];
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          walkSchema(item as Record<string, unknown>);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 把 3.1 的数组类型 type 降级为 3.0 标量 type + nullable。
+ *
+ * - ["string","null"] → type:"string", nullable:true
+ * - ["string","integer"]（纯联合）→ 取首个非 null 类型，其余记入 description
+ */
+function convertTypeArray(schema: Record<string, unknown>): void {
+  const type = schema.type;
+  if (!Array.isArray(type)) return;
+  const types = type.filter((t) => typeof t === "string");
+  if (types.length === 0) {
+    delete schema.type;
+    return;
+  }
+  const hasNull = types.includes("null");
+  const nonNull = types.filter((t) => t !== "null");
+  if (nonNull.length === 0) {
+    // 仅 ["null"] → 3.0 无对应表达，删除 type
+    delete schema.type;
+    if (hasNull) (schema as { nullable?: boolean }).nullable = true;
+    return;
+  }
+  // 取首个非 null 类型作为主类型
+  schema.type = nonNull[0];
+  if (hasNull) (schema as { nullable?: boolean }).nullable = true;
+  // 联合多个类型时，把完整类型列表补到 description 末尾（保留信息）
+  if (nonNull.length > 1) {
+    const existing = typeof schema.description === "string" ? schema.description : "";
+    const note = `(类型可为: ${nonNull.join(" | ")})`;
+    schema.description = existing ? `${existing} ${note}` : note;
+  }
+}
+
+/**
+ * 把 3.1 的数字形态 exclusiveMinimum/exclusiveMaximum 降级为 3.0 布尔形态。
+ *
+ * 3.1: exclusiveMinimum: 0      → 3.0: minimum: 0, exclusiveMinimum: true
+ * 3.1: exclusiveMaximum: 10     → 3.0: maximum: 10, exclusiveMaximum: true
+ * 3.0 原有的布尔形态不受影响。
+ */
+function convertExclusiveBounds(schema: Record<string, unknown>): void {
+  const min = schema.exclusiveMinimum;
+  if (typeof min === "number") {
+    schema.minimum = min;
+    schema.exclusiveMinimum = true;
+  }
+  const max = schema.exclusiveMaximum;
+  if (typeof max === "number") {
+    schema.maximum = max;
+    schema.exclusiveMaximum = true;
+  }
 }

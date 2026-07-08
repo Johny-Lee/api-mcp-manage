@@ -189,6 +189,8 @@ export interface AddProjectInput {
   projectId?: string;
   /** 上游 / yapi 项目 token */
   token?: string;
+  /** 是否导入 JSON 模式（true 时无需 url/baseUrl/projectId/token，不自动拉取/刷新） */
+  importMode?: boolean;
 }
 
 /** 添加项目 */
@@ -208,6 +210,7 @@ export async function addProject(
     baseUrl: input.baseUrl,
     projectId: input.projectId,
     token: input.token,
+    importMode: input.importMode || false,
     createdAt: now,
     updatedAt: now,
   };
@@ -216,7 +219,7 @@ export async function addProject(
   return { config, project };
 }
 
-/** 更新项目（支持 source/url/baseUrl/projectId/token/name/desc） */
+/** 更新项目（支持 source/url/baseUrl/projectId/token/name/desc/importMode） */
 export async function updateProject(
   config: McpProjectsConfig,
   id: string,
@@ -225,6 +228,10 @@ export async function updateProject(
 ): Promise<McpProjectsConfig> {
   const proj = config.projects.find((p) => p.id === id);
   if (!proj) throw new Error(`项目不存在: ${id}`);
+  // 从导入模式切回自动拉取：清除导入文档
+  if (proj.importMode && patch.importMode === false) {
+    proj.importedDoc = undefined;
+  }
   Object.assign(proj, patch, { updatedAt: new Date().toISOString() });
   // 切换 source 时校验新形态字段
   validateProjectInput(proj);
@@ -232,15 +239,26 @@ export async function updateProject(
   return config;
 }
 
-/** 校验项目输入：按 source 检查必填字段 */
+/** 校验项目输入：导入模式跳过连接字段；否则按 source 检查必填字段 */
 function validateProjectInput(input: AddProjectInput): void {
   if (!input.name) throw new Error("项目 name 必填");
   const source = input.source || "swagger";
+  // postman 源仅支持导入 JSON 模式（无标准 HTTP 文档端点）
+  if (source === "postman") {
+    if (!input.importMode) throw new Error("postman 源仅支持导入 JSON 模式");
+    return;
+  }
+  // 导入 JSON 模式：无需上游连接字段
+  if (input.importMode) return;
   if (source === "swagger") {
     if (!input.url) throw new Error("swagger 源需要 url 字段");
   } else if (source === "yapi") {
     if (!input.baseUrl) throw new Error("yapi 源需要 baseUrl 字段");
     if (!input.projectId) throw new Error("yapi 源需要 projectId 字段");
+  } else if (source === "apifox") {
+    // apifox 自动拉取：projectId + token 必填（baseUrl 可选，缺省用公有云默认值）
+    if (!input.projectId) throw new Error("apifox 源需要 projectId 字段");
+    if (!input.token) throw new Error("apifox 源需要 token（访问令牌）");
   }
 }
 
@@ -251,6 +269,29 @@ export async function removeProject(
   overridePath?: string,
 ): Promise<McpProjectsConfig> {
   config.projects = config.projects.filter((p) => p.id !== id);
+  await saveConfig(config, overridePath);
+  return config;
+}
+
+/**
+ * 持久化导入的文档到指定项目（导入 JSON 模式专用）
+ *
+ * 校验 project.importMode 为 true 后写入 importedDoc 并保存。
+ * @returns 更新后的 config
+ */
+export async function setImportedDoc(
+  config: McpProjectsConfig,
+  id: string,
+  doc: import("../types.js").OpenApiDocument,
+  overridePath?: string,
+): Promise<McpProjectsConfig> {
+  const proj = config.projects.find((p) => p.id === id);
+  if (!proj) throw new Error(`项目不存在: ${id}`);
+  if (!proj.importMode) {
+    throw new Error(`项目 ${id} 非导入 JSON 模式，不支持导入`);
+  }
+  proj.importedDoc = doc;
+  proj.updatedAt = new Date().toISOString();
   await saveConfig(config, overridePath);
   return config;
 }
@@ -308,4 +349,34 @@ export async function updateCacheSettings(
   }
   await saveConfig(config, overridePath);
   return config;
+}
+
+/**
+ * 更新 Web 后台访问 Token 持久化设置
+ *
+ * - 开启持久化（persist=true）：优先复用当前进程内存中的 token（currentToken），
+ *   其次复用已存 admin_session_token，都没有则生成新的，保存后返回
+ * - 关闭持久化（persist=false）：清除已存的 admin_session_token，返回 null
+ *
+ * @param currentToken 当前进程内存中的 adminSessionToken（若有，开启持久化时优先沿用，保证当前会话重启后仍有效）
+ * @returns { config, adminSessionToken } 开启时返回持久化 token，关闭时返回 null
+ */
+export async function updateAdminTokenPersistence(
+  config: McpProjectsConfig,
+  persist: boolean,
+  overridePath?: string,
+  currentToken?: string,
+): Promise<{ config: McpProjectsConfig; adminSessionToken: string | null }> {
+  config.settings.persist_admin_token = persist;
+  if (persist) {
+    // 优先沿用当前内存 token -> 已存 token -> 新生成
+    const token = currentToken || config.settings.admin_session_token || generateAdminSessionToken();
+    config.settings.admin_session_token = token;
+    await saveConfig(config, overridePath);
+    return { config, adminSessionToken: token };
+  }
+  // 关闭持久化：清除已存 token
+  config.settings.admin_session_token = undefined;
+  await saveConfig(config, overridePath);
+  return { config, adminSessionToken: null };
 }

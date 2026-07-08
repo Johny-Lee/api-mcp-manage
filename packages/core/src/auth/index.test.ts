@@ -86,7 +86,7 @@ describe("StaticKeyAuthProvider", () => {
 });
 
 describe("createAdminAuth", () => {
-  const adminAuth = createAdminAuth("Session_admin123");
+  const adminAuth = createAdminAuth(() => "Session_admin123");
 
   it("正确 admin token 通过", async () => {
     const status = await runAuthTest(
@@ -129,7 +129,7 @@ describe("createAdminAuth", () => {
       Object.defineProperty(req, "ip", { value: "192.168.1.5" });
       next();
     });
-    app.use(createAdminAuth("Session_admin123"));
+    app.use(createAdminAuth(() => "Session_admin123"));
     app.use((_req, res) => res.status(200).json({ ok: true }));
 
     return new Promise((resolve) => {

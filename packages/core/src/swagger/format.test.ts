@@ -156,6 +156,24 @@ describe("formatApiDetail", () => {
     expect(md).not.toContain('"properties"');
   });
 
+  it("请求体空对象 schema（无字段）→ 不展示请求体区块", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      requestBody: {
+        content: {
+          "multipart/form-data": {
+            schema: { type: "object", properties: {} },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    // 空对象 schema 无参数可展示 → 整个请求体区块不出现
+    expect(md).not.toContain("请求体");
+    expect(md).not.toContain('"properties"');
+    expect(md).not.toContain("multipart/form-data");
+  });
+
   it("响应 schema description 含原始 JSON 文本 → 按 text 展示", () => {
     const op: OpenApiOperation = {
       summary: "t",
@@ -204,6 +222,118 @@ describe("formatApiDetail", () => {
     const md = formatApiDetail("Proj", "/p", "post", op);
     expect(md).toContain("| 参数名 | 类型 | 必填 | 描述 |");
     expect(md).toContain("| `token` | string |  | 令牌 |");
+  });
+
+  it("响应嵌套 object schema → 树形缩进展开", () => {
+    // 还原 Apifox 登录接口结构：data.object.{token,userid,...}
+    const op: OpenApiOperation = {
+      summary: "t",
+      responses: {
+        "200": {
+          description: "成功",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  code: { type: "integer" },
+                  data: {
+                    type: "object",
+                    properties: {
+                      object: {
+                        type: "object",
+                        properties: {
+                          token: { type: "string", description: "令牌" },
+                          userid: { type: "string" },
+                        },
+                        required: ["token"],
+                      },
+                    },
+                    required: ["object"],
+                  },
+                },
+                required: ["data", "code"],
+              },
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    // 顶层字段直接显示名字
+    expect(md).toContain("| `code` | integer | ✅ |  |");
+    expect(md).toContain("| `data` | object | ✅ |  |");
+    // 一级嵌套：↳ + 字段名（无路径前缀）
+    expect(md).toContain("| ↳ `object` | object | ✅ |  |");
+    // 二级嵌套：2 空格缩进 + ↳
+    expect(md).toContain("|   ↳ `token` | string | ✅ | 令牌 |");
+    expect(md).toContain("|   ↳ `userid` | string |  |  |");
+    // 不应出现点号路径
+    expect(md).not.toContain("data.object");
+  });
+
+  it("响应含数组对象 schema → 递归展开数组元素字段", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      responses: {
+        "200": {
+          description: "成功",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  list: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        id: { type: "integer", description: "ID" },
+                        name: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    expect(md).toContain("| `list` | array<object> |  |  |");
+    // 数组元素字段用 ↳ 缩进展开（非路径前缀）
+    expect(md).toContain("| ↳ `id` | integer |  | ID |");
+    expect(md).toContain("| ↳ `name` | string |  |  |");
+    expect(md).not.toContain("list.id");
+  });
+
+  it("nullable 字段 → 类型末尾显示 ?（3.1 降级后的可空标记）", () => {
+    const op: OpenApiOperation = {
+      summary: "t",
+      responses: {
+        "200": {
+          description: "成功",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  name: { type: "string", nullable: true, description: "可空名称" },
+                  age: { type: "integer" },
+                  list: { type: "array", nullable: true, items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const md = formatApiDetail("Proj", "/p", "post", op);
+    // 可空标量 → string?
+    expect(md).toContain("| `name` | string? |  | 可空名称 |");
+    // 非空标量不受影响
+    expect(md).toContain("| `age` | integer |  |  |");
   });
 
   it("传入环境域名 → 渲染环境域名表", () => {

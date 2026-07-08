@@ -53,6 +53,7 @@ function createWindow() {
     height: 800,
     show: false,
     title: "API MCP Manager",
+    icon: resolveAppIcon(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -119,13 +120,70 @@ function createTray() {
   tray.on("click", () => mainWindow?.show());
 }
 
-/** 创建托盘图标（占位 16x16 透明 PNG） */
+/**
+ * 解析应用图标文件路径（窗口图标）。
+ *
+ * 兼容开发与打包两种环境：
+ * - 开发：packages/desktop/src/main → ../../assets/icon.png
+ * - 打包：asar 内 dist/main → ../../assets/icon.png（assets/icons 已在 files 配置中打包）
+ */
+function resolveAppIcon(): string {
+  const candidates = [
+    join(__dirname, "..", "..", "assets", "icon.png"),
+    join(process.resourcesPath || "", "app.asar", "assets", "icon.png"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return join(__dirname, "..", "..", "assets", "icon.png");
+}
+
+/**
+ * 创建托盘图标（优先用真实 logo，缺失时回退占位透明图标）。
+ *
+ * 系统托盘需要较小尺寸图标，使用 32x32 版本；macOS 托盘会自动适配模板渲染。
+ */
 function createTrayIcon() {
+  const candidates = [
+    join(__dirname, "..", "..", "assets", "icons", "icon-32.png"),
+    join(__dirname, "..", "..", "assets", "icons", "icon-16.png"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      const img = nativeImage.createFromPath(p);
+      if (!img.isEmpty()) return img;
+    }
+  }
+  // 回退：占位 16x16 透明 PNG
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAOklEQVR4nO3OQQ0AIBADwYJ/obBgjPbJKq3gESxgYyCgYyCgYyCgYyCgYyCgYyCgYyCgYyCgYyCgYyCgYyCgYyAAAABJruz0wAAAABJRU5ErkJggg==",
     "base64",
   );
   return nativeImage.createFromBuffer(png, { scaleFactor: 1.0 });
+}
+
+// ──────────────────────────────────────────────
+// 单实例锁：确保全局只运行一个实例
+// ──────────────────────────────────────────────
+// 第二个实例启动时（如再次点击快捷方式），此处返回 false，直接退出进程；
+// 已运行的第一个实例收到 second-instance 事件，把窗口拉到前台。
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // 本进程是第二个实例：立即退出，由第一个实例处理
+  app.quit();
+} else {
+  // 本进程是第一个实例：监听后续启动，聚焦已有窗口
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      // 窗口可能被最小化到托盘：先恢复再聚焦显示
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    } else {
+      // 窗口尚未创建（如 server 启动慢）：重新触发创建
+      createWindow();
+    }
+  });
 }
 
 // ──────────────────────────────────────────────

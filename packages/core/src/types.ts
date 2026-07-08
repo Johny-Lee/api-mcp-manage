@@ -3,7 +3,7 @@
  */
 
 /** API 文档来源类型 */
-export type ApiSource = "swagger" | "yapi";
+export type ApiSource = "swagger" | "yapi" | "apifox" | "postman";
 
 /** 单个 API 项目配置 */
 export interface McpProject {
@@ -17,6 +17,9 @@ export interface McpProject {
    * 文档来源类型：
    * - swagger: url 字段直接指向 Swagger/OpenAPI 文档（默认）
    * - yapi: 由 baseUrl + projectId 拼接 YApi 的 swagger 导出端点
+   * - apifox: 通过 Apifox 开放 API（export-openapi 端点）拉取标准 OpenAPI 文档，
+   *   或导入 Apifox 原生数据导出格式（importMode）
+   * - postman: 导入 Postman Collection v2.1/v2.0 导出格式（仅支持导入 JSON）
    */
   source?: ApiSource;
   /**
@@ -24,12 +27,39 @@ export interface McpProject {
    * source=yapi 时可为空，由 baseUrl+projectId 构建
    */
   url?: string;
-  /** YApi 实例基地址（source=yapi 时必填），如 https://yapi.example.com */
+  /**
+   * 实例基地址：
+   * - source=yapi 时必填，如 https://yapi.example.com
+   * - source=apifox 时可选，缺省为公有云默认值 https://api.apifox.com（私有化部署可覆盖）
+   */
   baseUrl?: string;
-  /** YApi 项目 ID（source=yapi 时必填），数字或字符串 */
+  /**
+   * 项目 ID：
+   * - source=yapi 时必填（数字或字符串）
+   * - source=apifox 自动拉取时必填（Apifox 项目 ID）
+   */
   projectId?: string;
-  /** 上游接口访问令牌（可选，已加密存储）；yapi 即项目 token */
+  /**
+   * 上游接口访问令牌（可选，已加密存储）：
+   * - swagger: 上游文档访问令牌（bearer xxx 或纯 token）
+   * - yapi: 项目 token
+   * - apifox: 访问令牌（Bearer Token，自动拉取时必填）
+   */
   token?: string;
+  /**
+   * 是否为手动导入 JSON 模式：
+   * - true：无上游，不自动拉取/刷新缓存，接口文档由用户在导入弹层粘贴 JSON 提供
+   * - false/undefined：自动拉取模式（默认）
+   *
+   * 导入时仍按 source 决定 JSON 格式校验：swagger→OpenAPI/Swagger 文档，yapi→YApi 原生接口详情数组
+   */
+  importMode?: boolean;
+  /**
+   * 导入模式下持久化的文档（已校验+转换为 OpenApiDocument）。
+   * 导入 JSON 成功后写入；fetchAndParse 在 importMode 时直接返回此字段。
+   * 仅 importMode=true 项目使用。
+   */
+  importedDoc?: OpenApiDocument;
   /** 创建时间 ISO */
   createdAt: string;
   /** 更新时间 ISO */
@@ -55,6 +85,18 @@ export interface McpSettings {
   cache_type?: "memory" | "redis";
   /** Redis 连接配置（cache_type=redis 时必填） */
   cache_redis?: CacheRedisConfig;
+  /**
+   * 是否持久化 Web 后台访问 Token（admin_session_token）：
+   * - false / undefined（默认）：每次启动重新生成，URL 中 token 每次变化
+   * - true：将生成的 token 持久化到配置文件，重启后复用，Web 后台地址不变
+   */
+  persist_admin_token?: boolean;
+  /**
+   * 持久化的 Web 后台访问 Token。
+   * 仅当 persist_admin_token=true 时使用与维护；首次启用时生成并保存，
+   * 此后每次启动直接复用。关闭持久化时清空。
+   */
+  admin_session_token?: string;
 }
 
 /** Redis 缓存连接配置 */

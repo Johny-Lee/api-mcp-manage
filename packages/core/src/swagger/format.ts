@@ -101,35 +101,43 @@ export function formatApiDetail(
 
   // Request body
   if (op.requestBody?.content) {
-    lines.push("#### 请求体");
-    lines.push("");
+    // 预渲染各 content-type，跳过空 schema（无 properties 的对象）以避免无意义展示
+    const rendered: { contentType: string; table?: string[]; schema?: Record<string, unknown>; example?: unknown }[] = [];
     for (const [contentType, media] of Object.entries(op.requestBody.content)) {
-      lines.push(`**Content-Type**: \`${contentType}\`${op.requestBody.required ? " (必填)" : ""}`);
-      // 对象 schema → 参数表展示（与请求参数风格一致）
-      if (media.schema) {
-        const table = schemaToTable(media.schema);
+      const schema = media.schema as Record<string, unknown> | undefined;
+      const table = schema ? schemaToTable(schema) : undefined;
+      // 空 schema（对象但无字段）→ 无内容可展示，跳过
+      if (schema && !table && isEmptyObjectSchema(schema)) continue;
+      rendered.push({ contentType, table, schema, example: media.example });
+    }
+    // 仅当有可展示内容时才输出「请求体」区块
+    if (rendered.length > 0) {
+      lines.push("#### 请求体");
+      lines.push("");
+      for (const { contentType, table, schema, example } of rendered) {
+        lines.push(`**Content-Type**: \`${contentType}\`${op.requestBody.required ? " (必填)" : ""}`);
         if (table) {
           lines.push("");
           lines.push("| 参数名 | 类型 | 必填 | 描述 |");
           lines.push("|--------|------|------|------|");
           lines.push(...table);
-        } else {
-          // 非对象 schema（原始类型等）→ 仍展示 schema JSON
+        } else if (schema) {
+          // 非对象 schema（原始类型等）→ 展示 schema JSON
           lines.push("");
           lines.push("Schema:");
           lines.push("```json");
-          lines.push(JSON.stringify(media.schema, null, 2));
+          lines.push(JSON.stringify(schema, null, 2));
           lines.push("```");
         }
-      }
-      if (media.example !== undefined) {
+        if (example !== undefined) {
+          lines.push("");
+          lines.push("示例:");
+          lines.push("```json");
+          lines.push(JSON.stringify(example, null, 2));
+          lines.push("```");
+        }
         lines.push("");
-        lines.push("示例:");
-        lines.push("```json");
-        lines.push(JSON.stringify(media.example, null, 2));
-        lines.push("```");
       }
-      lines.push("");
     }
   }
 
@@ -178,21 +186,67 @@ export function formatApiDetail(
 }
 
 /**
- * 把对象 schema 的 properties 渲染为表格行。
- * 仅当 schema 是对象（含 properties）时返回行数组；否则返回 undefined。
+ * 判断是否为「空对象 schema」：类型为 object 但没有任何字段定义。
+ *
+ * 形如 { type: "object", properties: {} } 或 { type: "object" }（无 properties）。
+ * 这类 schema 没有实际参数可展示，渲染时应跳过。
  */
-function schemaToTable(schema: Record<string, unknown>): string[] | undefined {
+function isEmptyObjectSchema(schema: Record<string, unknown>): boolean {
+  const type = schema.type;
+  if (type !== "object" && !schema.properties) return false;
+  const props = schema.properties as Record<string, unknown> | undefined;
+  return !props || Object.keys(props).length === 0;
+}
+
+/**
+ * 把对象 schema 的 properties 渲染为表格行（递归展开嵌套对象/数组）。
+ *
+ * 仅当 schema 是对象（含 properties）时返回行数组；否则返回 undefined。
+ * 嵌套用树形缩进体现层级（参数名只显示本级字段名，非完整路径）：
+ *   data        object
+ *   ↳ object    object
+ *     ↳ token   string
+ *     ↳ userid  string
+ *
+ * @param depth 递归深度（0=顶层，控制缩进与防止无限递归）
+ */
+function schemaToTable(schema: Record<string, unknown>, depth = 0): string[] | undefined {
   const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
   if (!properties || typeof properties !== "object") return undefined;
+  // 防止过深嵌套或循环引用导致爆栈
+  if (depth > 10) return undefined;
 
   const requiredList = (schema.required as unknown[] | undefined) ?? [];
+  // 顶层字段直接显示名字；嵌套字段用 ↳ + 每层 2 空格缩进
+  const indent = depth === 0 ? "" : "  ".repeat(depth - 1) + "↳ ";
   const rows: string[] = [];
   for (const [name, prop] of Object.entries(properties)) {
     if (!prop || typeof prop !== "object") continue;
-    const type = describeSchema(prop);
     const required = requiredList.includes(name) ? "✅" : "";
     const desc = (prop.description as string | undefined) || "";
-    rows.push(`| \`${name}\` | ${type} | ${required} | ${desc} |`);
+    const nameCell = `${indent}\`${name}\``;
+
+    // 数组：展开元素 schema（若元素为对象，递归其 properties）
+    if ((prop.type as string) === "array") {
+      const items = prop.items as Record<string, unknown> | undefined;
+      const itemType = items ? describeSchema(items) : "any";
+      rows.push(`| ${nameCell} | array<${itemType}> | ${required} | ${desc} |`);
+      if (items && (items.properties || (items.type as string) === "object")) {
+        rows.push(...(schemaToTable(items, depth + 1) || []));
+      }
+      continue;
+    }
+
+    // 对象：先输出自身行，再递归展开内部 properties
+    if ((prop.type as string) === "object" || prop.properties) {
+      rows.push(`| ${nameCell} | object | ${required} | ${desc} |`);
+      const nested = schemaToTable(prop, depth + 1);
+      if (nested) rows.push(...nested);
+      continue;
+    }
+
+    // 原始类型
+    rows.push(`| ${nameCell} | ${describeSchema(prop)} | ${required} | ${desc} |`);
   }
   return rows.length ? rows : undefined;
 }
@@ -246,6 +300,8 @@ function describeSchema(schema: Record<string, unknown>): string {
     const shortName = schema.$ref.split("/").pop() || schema.$ref;
     return `ref: ${shortName}`;
   }
+  // nullable（OpenAPI 3.0 形态；3.1 已被 normalize 降级为此形态）→ 类型末尾加 ?
+  const nullableSuffix = schema.nullable === true ? "?" : "";
   const type = schema.type;
   if (type === "array") {
     const items = schema.items as Record<string, unknown> | undefined;
@@ -253,10 +309,10 @@ function describeSchema(schema: Record<string, unknown>): string {
     return `array<${inner}>`;
   }
   if (type === "object" || schema.properties) {
-    return "object";
+    return "object" + nullableSuffix;
   }
   if (typeof type === "string") {
-    return type;
+    return type + nullableSuffix;
   }
   return "object";
 }
